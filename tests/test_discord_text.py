@@ -42,6 +42,10 @@ def test_format_recap_queue_name_labels_arena_3x6():
     assert format_recap_queue_name(1750) == "🏟️ Arena 3x6"
 
 
+def test_format_recap_queue_name_labels_ranked_5s():
+    assert format_recap_queue_name(710) == "🏆 Ranked 5s"
+
+
 def test_format_recap_player_line_uses_arena_placement():
     participant = {
         "championName": "Sett",

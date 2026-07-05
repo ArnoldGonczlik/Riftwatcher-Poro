@@ -41,6 +41,8 @@ def format_recap_queue_name(queue_id):
         return "\U0001F3C6 Ranked Solo/Duo"
     if queue_id == 440:
         return "\U0001F3C6 Ranked Flex"
+    if queue_id == 710:
+        return "\U0001F3C6 Ranked 5s"
     if queue_id == 1750:
         return "\U0001F3DF\uFE0F Arena 3x6"
     if queue_id in ARENA_QUEUE_IDS:

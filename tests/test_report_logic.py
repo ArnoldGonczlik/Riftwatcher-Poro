@@ -24,6 +24,7 @@ from src.report_logic import (
 def test_get_mode_bucket_maps_ranked_and_ignores_other_queues():
     assert get_mode_bucket(420) == "solo_duo"
     assert get_mode_bucket(440) == "flex"
+    assert get_mode_bucket(710) == "flex"
     assert get_mode_bucket(450) is None
     assert get_mode_bucket(1700) is None
 

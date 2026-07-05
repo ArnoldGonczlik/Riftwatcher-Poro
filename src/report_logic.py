@@ -35,7 +35,7 @@ _PERF_STAT_WEIGHTS = {
 def get_mode_bucket(queue_id):
     if queue_id == 420:
         return "solo_duo"
-    if queue_id == 440:
+    if queue_id in (440, 710):
         return "flex"
     return None
 
