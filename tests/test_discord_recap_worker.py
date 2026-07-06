@@ -588,7 +588,7 @@ def test_process_recap_cycle_formats_arena_3x6_by_placement():
     assert content.index("**Alpha**") < content.index("**Bravo**")
     assert "Place #1" in content
     assert "Place #4" in content
-    assert "Team Dmg 45.6%" in content
+    assert "Damage 21,000 (45.6%)" in content
     assert "🩸 `Taken 18,000`" in content
     assert "Healing 1,200" in content
     assert "Shielded 2,345" in content

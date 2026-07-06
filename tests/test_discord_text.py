@@ -85,7 +85,7 @@ def test_format_recap_player_line_uses_arena_placement():
     assert "`Team 4`" in line
     assert "**Sett** - **Place #2**" in line
     assert "K/D/A 9/4/12" in line
-    assert "Team Dmg 32.1%" in line
+    assert "Damage 45,000 (32.1%)" in line
     assert "🩸 `Taken 38,000`" in line
     assert "Healing 9,000" in line
     assert "Shielded 1,234" in line

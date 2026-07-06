@@ -172,10 +172,13 @@ def format_recap_player_line(
         team_label = f"Team {subteam_id}" if subteam_id is not None else "Team ?"
         gold_earned = int(participant.get("goldEarned", 0) or 0)
         damage_share = get_arena_team_damage_percentage(participant)
-        damage_label = f"{damage_share:.1f}%" if damage_share is not None else "N/A"
+        if damage_share is not None:
+            damage_text = f"Damage {player_damage:,} ({damage_share:.1f}%)"
+        else:
+            damage_text = f"Damage {player_damage:,}"
         lines = [
             f"{result_emoji} **{lol_name}** | `{team_label}` \u2022 **{champion}** - **Place {placement_label}**\n"
-            f"   \u2694\uFE0F `K/D/A {kills}/{deaths}/{assists}`  \U0001F4A5 `Team Dmg {damage_label}`\n"
+            f"   \u2694\uFE0F `K/D/A {kills}/{deaths}/{assists}`  \U0001F4A5 `{damage_text}`\n"
             f"   \U0001FA78 `Taken {damage_taken:,}`  \u2764\uFE0F `Healing {healing:,}`  \U0001F6E1\uFE0F `Shielded {shielded:,}`\n"
             f"   \U0001FA99 `Gold {gold_earned:,}`"
         ]

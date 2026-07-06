@@ -3,7 +3,7 @@ import threading
 import requests
 
 
-COMMUNITY_DRAGON_ARENA_URL = "https://raw.communitydragon.org/latest/cdragon/arena/en_us.json"
+COMMUNITY_DRAGON_ARENA_URL = "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/cherry-augments.json"
 DATA_DRAGON_VERSIONS_URL = "https://ddragon.leagueoflegends.com/api/versions.json"
 DATA_DRAGON_ITEM_URL_TEMPLATE = "https://ddragon.leagueoflegends.com/cdn/{version}/data/en_US/item.json"
 STATIC_DATA_TIMEOUT_SECONDS = 5
@@ -18,23 +18,22 @@ def _fetch_json(url):
     return response.json()
 
 
-HARDCODED_AUGMENTS = {
-    "390": "Infernal Conduit",
-    "1344": "Phenomenal Evil",
-}
+HARDCODED_AUGMENTS = {}
+
 
 def _load_augment_names():
     try:
         data = _fetch_json(COMMUNITY_DRAGON_ARENA_URL)
     except requests.RequestException:
-        data = {"augments": []}
+        data = []
     names = HARDCODED_AUGMENTS.copy()
-    for row in data.get("augments", []) or []:
-        augment_id = row.get("id")
-        name = row.get("name")
-        if augment_id is None or not name:
-            continue
-        names[str(augment_id)] = str(name)
+    if isinstance(data, list):
+        for row in data:
+            augment_id = row.get("id")
+            name = row.get("nameTRA") or row.get("name")
+            if augment_id is None or not name:
+                continue
+            names[str(augment_id)] = str(name)
     return names
 
 
