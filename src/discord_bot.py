@@ -113,7 +113,7 @@ WORKER_STALE_THRESHOLDS = {
     "refresh": max(90, max(30, DAILY_REFRESH_SECONDS) * 3),
     "rank": max(90, max(30, DAILY_REFRESH_SECONDS) * 3),
     "recap": max(90, max(30, MATCH_RECAP_POLL_SECONDS) * 3),
-    "backfill": max(300, max(120, DAILY_REFRESH_SECONDS * 2) * 3),
+    "backfill": cfg.BACKFILL_STALE_THRESHOLD_SECONDS if cfg.BACKFILL_STALE_THRESHOLD_SECONDS > 0 else max(300, max(120, DAILY_REFRESH_SECONDS * 2) * 6),
 }
 def load_tracked_players():
     return db_load_tracked_players()
