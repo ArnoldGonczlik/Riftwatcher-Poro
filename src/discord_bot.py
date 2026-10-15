@@ -14,6 +14,7 @@ from src.commands.slash_handlers import handle_health_slash, handle_sync_command
 from src.discord_command_handlers import handle_incoming_message
 from src.discord_text import create_request_id
 from src.constants import ADD_COMMAND, BACKFILL_COMMAND, DEBUG_PLAYER_COMMAND, HEALTH_COMMAND, DAILY_COMMAND, REMOVE_COMMAND, RIOT_TEST_COMMAND, SYNC_COMMAND, TEST_COMMAND, WEEK_COMMAND
+from src.esports_api import EsportsApiClient
 from src.poro_service import PoroService
 from src.riot_api import RiotApiClient
 from src.runtime.alerts import RiotAlertState, trigger_riot_key_alert as runtime_trigger_riot_key_alert
@@ -28,6 +29,7 @@ from src.runtime.message_store import (
 )
 from src.runtime.workers import (
     background_daily_refresher as runtime_background_daily_refresher,
+    background_esports_notifier as runtime_background_esports_notifier,
     background_match_cache_backfiller as runtime_background_match_cache_backfiller,
     background_match_recap_notifier as runtime_background_match_recap_notifier,
     background_rank_notifier as runtime_background_rank_notifier,
@@ -117,6 +119,13 @@ WORKER_STALE_THRESHOLDS = {
     "recap": max(90, max(30, MATCH_RECAP_POLL_SECONDS) * 3),
     "backfill": cfg.BACKFILL_STALE_THRESHOLD_SECONDS if cfg.BACKFILL_STALE_THRESHOLD_SECONDS > 0 else max(300, max(120, DAILY_REFRESH_SECONDS * 2) * 6),
 }
+NEWS_CHANNEL_ID = cfg.NEWS_CHANNEL_ID
+ESPORTS_ENABLED = NEWS_CHANNEL_ID > 0
+if ESPORTS_ENABLED:
+    WORKER_STATS["esports"] = {"cycles": 0, "errors": 0, "runs": 0, "elapsed_ms_last": 0, "elapsed_ms_avg": 0, "elapsed_ms_max": 0, "elapsed_ms_total": 0, "last_success_at": START_MONOTONIC}
+    WORKER_STALE_THRESHOLDS["esports"] = max(300, max(30, cfg.ESPORTS_POLL_SECONDS) * 5)
+
+
 def load_tracked_players():
     return db_load_tracked_players()
 
@@ -163,6 +172,7 @@ BACKGROUND_RECAP_TASK = None
 BACKGROUND_RANK_TASK = None
 BACKGROUND_BACKFILL_TASK = None
 BACKGROUND_STALL_TASK = None
+BACKGROUND_ESPORTS_TASK = None
 
 
 def trigger_riot_key_alert():
@@ -195,6 +205,8 @@ riot_client = RiotApiClient(
     db_set_last_seen_match_id=db_set_last_seen_match_id,
     on_unauthorized=trigger_riot_key_alert,
 )
+
+esports_client = EsportsApiClient(api_key=cfg.ESPORTS_API_KEY, log=log) if ESPORTS_ENABLED else None
 
 poro_service = PoroService(
     log=log,
@@ -452,6 +464,27 @@ async def background_daily_refresher():
     )
 
 
+async def background_esports_notifier():
+    if cfg.WORKER_STAGGER_SECONDS > 0:
+        await asyncio.sleep(cfg.WORKER_STAGGER_SECONDS * 4)
+    return await runtime_background_esports_notifier(
+        client=client,
+        esports_poll_seconds=cfg.ESPORTS_POLL_SECONDS,
+        request_id_context=REQUEST_ID_CONTEXT,
+        resolve_channel=resolve_channel,
+        news_channel_id=NEWS_CHANNEL_ID,
+        esports_client=esports_client,
+        league_slugs=cfg.ESPORTS_LEAGUES,
+        report_timezone=REPORT_TIMEZONE,
+        report_day_start_hour=REPORT_DAY_START_HOUR,
+        spoiler_tags=cfg.ESPORTS_SPOILER_TAGS,
+        db_get_state=db_get_state,
+        db_set_state=db_set_state,
+        worker_stats=WORKER_STATS,
+        log=log,
+    )
+
+
 async def background_worker_stall_notifier():
     sleep_seconds = 30
     await asyncio.sleep(15)
@@ -478,7 +511,7 @@ async def background_worker_stall_notifier():
 
 @client.event
 async def on_ready():
-    global BACKGROUND_REFRESH_TASK, BACKGROUND_RECAP_TASK, BACKGROUND_RANK_TASK, BACKGROUND_BACKFILL_TASK, BACKGROUND_STALL_TASK, STARTUP_SCOREBOARD_INIT_DONE, DEFAULT_EXECUTOR_CONFIGURED
+    global BACKGROUND_REFRESH_TASK, BACKGROUND_RECAP_TASK, BACKGROUND_RANK_TASK, BACKGROUND_BACKFILL_TASK, BACKGROUND_STALL_TASK, BACKGROUND_ESPORTS_TASK, STARTUP_SCOREBOARD_INIT_DONE, DEFAULT_EXECUTOR_CONFIGURED
     # on_ready fires again after every reconnect; only install the custom executor once.
     if cfg.ASYNCIO_THREAD_POOL_SIZE > 0 and not DEFAULT_EXECUTOR_CONFIGURED:
         loop = asyncio.get_running_loop()
@@ -535,6 +568,16 @@ async def on_ready():
             BACKGROUND_BACKFILL_TASK = client.loop.create_task(background_match_cache_backfiller())
         if BACKGROUND_STALL_TASK is None or BACKGROUND_STALL_TASK.done():
             BACKGROUND_STALL_TASK = client.loop.create_task(background_worker_stall_notifier())
+        if ESPORTS_ENABLED:
+            log(
+                f"[startup] Esports news enabled: NEWS_CHANNEL_ID={NEWS_CHANNEL_ID} "
+                f"leagues={','.join(cfg.ESPORTS_LEAGUES)} poll={cfg.ESPORTS_POLL_SECONDS}s "
+                f"spoilers={cfg.ESPORTS_SPOILER_TAGS}"
+            )
+            if BACKGROUND_ESPORTS_TASK is None or BACKGROUND_ESPORTS_TASK.done():
+                BACKGROUND_ESPORTS_TASK = client.loop.create_task(background_esports_notifier())
+        else:
+            log("[startup] Esports news disabled (set NEWS_CHANNEL_ID to enable).")
     if not STARTUP_SCOREBOARD_INIT_DONE:
         daily_channel = await resolve_channel(DAILY_REPORT_CHANNEL_ID)
         weekly_channel = await resolve_channel(WEEKLY_REPORT_CHANNEL_ID)

@@ -92,3 +92,14 @@ BASELINE_MATCH_LIMIT = get_env_int("BASELINE_MATCH_LIMIT", 5000)
 RIOT_REQUEST_YIELD_SECONDS = float(get_env_str("RIOT_REQUEST_YIELD_SECONDS", "0.0"))
 ASYNCIO_THREAD_POOL_SIZE = get_env_int("ASYNCIO_THREAD_POOL_SIZE", 0)
 WORKER_STAGGER_SECONDS = get_env_int("WORKER_STAGGER_SECONDS", 0)
+# --- Esports news (optional; disabled when NEWS_CHANNEL_ID is unset/0) ---
+NEWS_CHANNEL_ID = get_env_int("NEWS_CHANNEL_ID", 0)
+ESPORTS_LEAGUES = tuple(
+    slug.strip().lower()
+    for slug in get_env_str("ESPORTS_LEAGUES", "worlds").split(",")
+    if slug.strip()
+)
+# Public key embedded in the lolesports.com web app (not a secret); override if Riot rotates it.
+ESPORTS_API_KEY = get_env_str("ESPORTS_API_KEY", "0TvQnueqKa5mxJntVWt0w4LpLfEkrV1Ta8rQBb9Z")
+ESPORTS_POLL_SECONDS = get_env_int("ESPORTS_POLL_SECONDS", 60)
+ESPORTS_SPOILER_TAGS = get_env_bool("ESPORTS_SPOILER_TAGS", True)

@@ -43,6 +43,12 @@ Riftwatcher Poro is a Discord worker service that tracks ranked League results f
   - rank-state diffing and alert posting
 - `src/discord_backfill_worker.py`
   - low-priority older-match DB cache fill
+- `src/discord_esports_worker.py`
+  - pro play news cycle: daily schedule, live/game/series announcements
+- `src/esports_api.py`
+  - LoL Esports web API client (`getLeagues`, `getSchedule`), league slug -> ID resolution with built-in fallbacks
+- `src/esports_logic.py`
+  - pure event parsing, snapshot diffing, and message formatting
 - `src/runtime/`
   - shared runtime worker loops, message-store helpers, and alert helpers
 - `src/db/`
@@ -85,6 +91,13 @@ All workers run continuously while connected, each with startup jitter and cycle
 - Stall watchdog
   - interval: 30s
   - alerts in `EVENTS_CHANNEL_ID` when a worker exceeds its stale threshold (backfill threshold overridable via `BACKFILL_STALE_THRESHOLD_SECONDS`); deduped, with recovery messages
+- Esports worker (only when `NEWS_CHANNEL_ID` is set)
+  - interval: `max(30, ESPORTS_POLL_SECONDS)`
+  - fetches `getSchedule` per league in `ESPORTS_LEAGUES` and diffs against `esports_match_snapshot` in `bot_state`
+  - first observation per league is baseline only (no alerts)
+  - posts: live (`unstarted` -> `inProgress`), game win (`gameWins` increased), series win (`completed`)
+  - posts today's schedule once per report day (`esports_schedule_posted_cycle`), only from a fully successful fetch
+  - stale threshold: `max(300, poll * 5)`; raises (counts as error) only when every league fetch fails
 
 ## Data Flow
 
@@ -143,8 +156,9 @@ All workers run continuously while connected, each with startup jitter and cycle
 - `WEEKLY_REPORT_CHANNEL_ID`: weekly scoreboard + `!Weekly` command
 - `EVENTS_CHANNEL_ID`: ops/admin commands (`!help`, `!health`, `/health`, `!score`, `!test`, `!riottest`, `!Add`, `!remove`, `!DebugPlayer`, `!profile`, `!backfill`, `!tts`)
 - `MATCH_RECAP_CHANNEL_ID`: match recap posts, streak callouts, `!streak` and `!tts` commands
+- `NEWS_CHANNEL_ID` (optional): esports schedule and live/game/series updates; feature disabled when unset
 
-All channels are required and no channel fallback chain is used. `!sync` (administrators only) works in any server channel.
+All required channels must be set and no channel fallback chain is used. `!sync` (administrators only) works in any server channel.
 
 ## Key Operational Behaviors
 

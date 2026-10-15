@@ -82,6 +82,21 @@ If a recent Arena match does not appear:
 3. If the daily refresh sees `matches=1 total=0W-0L solo=0W-0L flex=0W-0L`, that can be normal for Arena because daily scoreboard totals only include solo/flex ranked queues.
 4. If augment/item names are missing, verify outbound access to CommunityDragon/Data Dragon from the host. The recap still works with raw IDs when static data is unavailable.
 
+## Esports News Troubleshooting
+
+Expected behavior (only when `NEWS_CHANNEL_ID` is set):
+- First cycle per league (`ESPORTS_LEAGUES`, default `worlds`) baselines silently: log `Baselined N events for worlds`.
+- Daily schedule posts once per report day (first poll after `REPORT_DAY_START_HOUR`, or at startup if not yet posted that day). Days without matches post nothing.
+- Live/game/match updates post within `ESPORTS_POLL_SECONDS` (default `60`) of lolesports.com updating.
+
+If updates stop:
+1. Check `!health` for the `esports` worker error count; the stall watchdog alerts in `EVENTS_CHANNEL_ID` after 5 missed polls.
+2. Check logs for `[esports] Schedule fetch failed`.
+   - `403 Forbidden`: Riot rotated the public lolesports.com web key. Get the current `x-api-key` from the lolesports.com site's network requests and set `ESPORTS_API_KEY`.
+   - Timeouts/5xx: transient API outage; the worker retries every cycle and keeps its snapshot, so no duplicate announcements are posted after recovery.
+3. `Unknown league slug` means a typo in `ESPORTS_LEAGUES` (valid examples: `worlds`, `msi`, `first_stand`, `lec`, `lck`).
+4. To force today's schedule to repost, delete the `esports_schedule_posted_cycle` row from `bot_state`.
+
 ## Daily Scoreboard Duplicate Message Guard
 
 Symptom:

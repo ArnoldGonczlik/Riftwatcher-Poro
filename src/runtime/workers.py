@@ -5,6 +5,7 @@ import time
 import discord
 
 from src.discord_backfill_worker import process_backfill_cycle
+from src.discord_esports_worker import process_esports_cycle
 from src.discord_rank_worker import process_rank_cycle
 from src.discord_recap_worker import process_recap_cycle
 from src.discord_text import create_request_id, report_signature
@@ -157,6 +158,61 @@ async def background_match_recap_notifier(
         elapsed = int((cycle_end - cycle_start) * 1000)
         _record_worker_cycle(worker_stats, "recap", had_error=had_error, elapsed_ms=elapsed, ended_at_mono=cycle_end)
         log(f"[recap] Cycle complete elapsed={elapsed}ms next_sleep={sleep_seconds}s")
+        await asyncio.sleep(sleep_seconds)
+
+
+async def background_esports_notifier(
+    *,
+    client,
+    esports_poll_seconds,
+    request_id_context,
+    resolve_channel,
+    news_channel_id,
+    esports_client,
+    league_slugs,
+    report_timezone,
+    report_day_start_hour,
+    spoiler_tags,
+    db_get_state,
+    db_set_state,
+    worker_stats,
+    log,
+):
+    sleep_seconds = max(30, esports_poll_seconds)
+    initial_jitter = random.uniform(0.0, min(15.0, sleep_seconds / 2))
+    if initial_jitter > 0:
+        log(f"[esports] Startup jitter sleep={initial_jitter:.1f}s")
+        await asyncio.sleep(initial_jitter)
+    while not client.is_closed():
+        cycle_start = time.monotonic()
+        token = request_id_context.set(create_request_id("esports"))
+        had_error = False
+        try:
+            channel = await resolve_channel(news_channel_id)
+            if channel is None:
+                had_error = True
+                log(f"[esports] News channel {news_channel_id} unavailable; skipping cycle.")
+            else:
+                await process_esports_cycle(
+                    esports_client=esports_client,
+                    league_slugs=league_slugs,
+                    channel=channel,
+                    report_timezone=report_timezone,
+                    report_day_start_hour=report_day_start_hour,
+                    spoiler_tags=spoiler_tags,
+                    db_get_state=db_get_state,
+                    db_set_state=db_set_state,
+                    log=log,
+                )
+        except Exception as exc:
+            had_error = True
+            log(f"[esports] Unexpected error: {exc}")
+        finally:
+            request_id_context.reset(token)
+        cycle_end = time.monotonic()
+        elapsed = int((cycle_end - cycle_start) * 1000)
+        _record_worker_cycle(worker_stats, "esports", had_error=had_error, elapsed_ms=elapsed, ended_at_mono=cycle_end)
+        log(f"[esports] Cycle complete elapsed={elapsed}ms next_sleep={sleep_seconds}s")
         await asyncio.sleep(sleep_seconds)
 
 

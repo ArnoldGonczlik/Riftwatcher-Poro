@@ -46,6 +46,8 @@ Start with:
 - `src/discord_recap_worker.py` - recap polling and recap -> stats sync
 - `src/discord_rank_worker.py` - ranked state comparison and notifications
 - `src/discord_backfill_worker.py` - low-priority historical cache backfill
+- `src/discord_esports_worker.py` - pro play news cycle (daily schedule, live/game/series updates)
+- `src/esports_api.py` / `src/esports_logic.py` - LoL Esports API client and pure parsing/diff/format helpers
 - `src/runtime/` - shared runtime worker/message/alert helpers
 - `src/db/` - Postgres pool, schema, and persistence helpers
 - `src/report_logic.py` - pure ranking/window helpers
@@ -93,6 +95,13 @@ Start with:
   - turret/dragon/baron takedowns
   - double/triple/quadra/penta kills
   - kill participation numerator/denominator
+- Optional esports news in `NEWS_CHANNEL_ID` (default league: Worlds):
+  - daily "Esports today" schedule at the report day start, with times rendered in each reader's local timezone
+  - live announcement when a match starts
+  - game win updates with the running series score
+  - series (match) win announcement with the final score
+  - scores/winners wrapped in spoiler tags by default (`ESPORTS_SPOILER_TAGS`)
+  - data source: the LoL Esports API that powers lolesports.com (unofficial; no signup needed)
 
 ## Background Workers
 
@@ -115,6 +124,9 @@ All workers start with jitter to avoid bursty startup traffic and log cycle hear
   - uses `cache_in_memory=False` to avoid polluting in-memory cache
 - Stall watchdog (every 30s)
   - alerts in `EVENTS_CHANNEL_ID` when a worker has no successful cycle within its stale threshold, and posts a recovery message
+- Esports worker (`ESPORTS_POLL_SECONDS`, default `60`; only when `NEWS_CHANNEL_ID` is set)
+  - polls the schedule for each league in `ESPORTS_LEAGUES` and diffs it against a snapshot in `bot_state`
+  - first poll per league is a silent baseline (no backlog spam)
 
 ## Commands
 
@@ -185,6 +197,14 @@ Low-resource hosting (NAS/IoT), all optional:
 - `RIOT_REQUEST_YIELD_SECONDS` (`0.0`) - pause between Riot requests to reduce CPU/network bursts
 - `WORKER_STAGGER_SECONDS` (`0`) - extra startup offset between background workers
 - `ASYNCIO_THREAD_POOL_SIZE` (`0` = Python default) - size of the default thread pool used for DB calls
+
+Esports news, all optional:
+
+- `NEWS_CHANNEL_ID` (unset = disabled) - channel for the daily schedule and live/game/series updates
+- `ESPORTS_LEAGUES` (`worlds`) - comma-separated lolesports league slugs, e.g. `worlds,msi,first_stand`
+- `ESPORTS_POLL_SECONDS` (`60`, min `30`)
+- `ESPORTS_SPOILER_TAGS` (`true`) - wrap scores/winners in Discord spoiler tags
+- `ESPORTS_API_KEY` (built-in lolesports.com public key) - override only if the default starts returning `403`
 
 ## Data Tables
 
