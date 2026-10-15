@@ -4,8 +4,24 @@ import contextvars
 from src.discord_command_handlers import handle_incoming_message
 
 
+class FakePermissions:
+    def __init__(self, administrator=False, manage_guild=False):
+        self.administrator = administrator
+        self.manage_guild = manage_guild
+
+
+class FakeRole:
+    def __init__(self, role_id):
+        self.id = role_id
+
+
 class FakeAuthor:
     bot = False
+    id = 4242
+
+    def __init__(self, manage_guild=True, role_ids=()):
+        self.guild_permissions = FakePermissions(manage_guild=manage_guild)
+        self.roles = [FakeRole(role_id) for role_id in role_ids]
 
 
 class FakeStatusMessage:
@@ -900,3 +916,88 @@ def test_profile_command_returns_summary_for_player():
     assert "Week: `10W-6L`" in text
     assert "Streak: `W3`" in text
     assert "Recent ranked KDA" in text
+
+
+def test_add_command_denied_without_manage_server_and_role():
+    channel = FakeChannel(channel_id=999)
+    incoming = FakeIncomingMessage("!Add Alpha#NA1", channel)
+    incoming.author = FakeAuthor(manage_guild=False)
+    riot_client = FakeRiotClient()
+    friends = []
+    logs = []
+
+    asyncio.run(
+        handle_incoming_message(
+            message=incoming,
+            riot_client=riot_client,
+            **{**_base_streak_kwargs(channel), "friends": friends, "log": logs.append, "admin_role_id": 55},
+        )
+    )
+
+    assert friends == []
+    assert riot_client.fetch_puuid_calls == []
+    assert len(channel.sent_messages) == 1
+    assert "requires the **Manage Server** permission or the <@&55> role" in channel.sent_messages[0].content
+    assert any(line.startswith("[auth] Denied !Add") for line in logs)
+
+
+def test_add_command_allowed_with_admin_role():
+    channel = FakeChannel(channel_id=999)
+    incoming = FakeIncomingMessage("!Add Alpha#NA1", channel)
+    incoming.author = FakeAuthor(manage_guild=False, role_ids=(55,))
+    friends = []
+
+    asyncio.run(
+        handle_incoming_message(
+            message=incoming,
+            riot_client=FakeRiotClient(),
+            **{**_base_streak_kwargs(channel), "friends": friends, "admin_role_id": 55},
+        )
+    )
+
+    assert friends == ["Alpha#NA1"]
+
+
+def test_tts_status_open_but_tts_toggle_requires_permission():
+    channel = FakeChannel(channel_id=999)
+    state = {}
+    kwargs = dict(
+        riot_client=FakeRiotClient(),
+        db_get_state=lambda key: state.get(key),
+        db_set_state=lambda key, value: state.update({key: value}),
+        **_base_streak_kwargs(channel),
+    )
+
+    status_msg = FakeIncomingMessage("!tts status", channel)
+    status_msg.author = FakeAuthor(manage_guild=False)
+    asyncio.run(handle_incoming_message(message=status_msg, **kwargs))
+    assert "currently `ON`" in channel.sent_messages[-1].content
+
+    toggle_msg = FakeIncomingMessage("!tts off", channel)
+    toggle_msg.author = FakeAuthor(manage_guild=False)
+    asyncio.run(handle_incoming_message(message=toggle_msg, **kwargs))
+    assert "requires the **Manage Server** permission" in channel.sent_messages[-1].content
+    assert state == {}
+
+
+def test_add_persist_failure_does_not_leak_db_details():
+    channel = FakeChannel(channel_id=999)
+    incoming = FakeIncomingMessage("!Add Alpha#NA1", channel)
+    friends = []
+
+    def failing_upsert(_riot_id, _puuid):
+        raise RuntimeError('connection to server at "db.internal" failed for user "poro"')
+
+    asyncio.run(
+        handle_incoming_message(
+            message=incoming,
+            riot_client=FakeRiotClient(),
+            **{**_base_streak_kwargs(channel), "friends": friends, "db_upsert_player": failing_upsert},
+        )
+    )
+
+    text = channel.sent_messages[-1].content
+    assert "failed to persist to postgres: internal error." in text
+    assert "(ref `streak-1234`)" in text
+    assert "db.internal" not in text
+    assert 'user "poro"' not in text

@@ -34,3 +34,4 @@ class CommandHandlerContext:
     db_get_state: Any = None
     db_set_state: Any = None
     db_remove_player: Any = None
+    admin_role_id: int | None = None

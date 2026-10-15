@@ -160,6 +160,8 @@ All workers run continuously while connected, each with startup jitter and cycle
 
 All required channels must be set and no channel fallback chain is used. `!sync` (administrators only) works in any server channel.
 
+Command authorization (`src/commands/permissions.py`) runs after channel routing: `!Add`, `!remove`, `!backfill`, and `!tts on|off` require Manage Server/Administrator or the optional `ADMIN_ROLE_ID` role. The client is created with `AllowedMentions.none()`, so no outgoing message can ping. User-facing command errors go through `discord_text.format_user_error` (safe category + request ref); raw exception text is logged only.
+
 ## Key Operational Behaviors
 
 - Snapshot throttling avoids unnecessary Discord edits in refresh cycles.

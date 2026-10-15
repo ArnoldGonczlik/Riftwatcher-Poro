@@ -160,6 +160,12 @@ Command routing:
 - `!sync` in any server channel
 - all other commands (and `/health`) in `EVENTS_CHANNEL_ID`
 
+Permissions:
+- `!Add`, `!remove`, `!backfill`, and `!tts on|off` change shared state and require the **Manage Server** permission (or Administrator), or the optional `ADMIN_ROLE_ID` role
+- usage hints (e.g. bare `!Add`) and `!tts status` stay open to everyone
+- the bot never pings: all outgoing messages suppress `@everyone`, role, and user mentions
+- command errors show a short, safe reason plus a `ref` ID; full details are only in the bot logs (search for the ref)
+
 ## Environment Variables
 
 Required:
@@ -189,6 +195,7 @@ Optional (with defaults):
 - `RIOT_PLATFORM_ROUTING` (`euw1`)
 - `RIOT_REGIONAL_ROUTING` (`europe`) - regional host for account/match-v5 API calls (`europe`, `americas`, `asia`)
 - `BACKFILL_STALE_THRESHOLD_SECONDS` (`0` = auto: `max(300, backfill interval * 6)`) - stall watchdog threshold for the backfill worker
+- `ADMIN_ROLE_ID` (unset = permission-only) - role allowed to run `!Add`/`!remove`/`!backfill`/`!tts on|off` in addition to Manage Server/Administrator
 
 Low-resource hosting (NAS/IoT), all optional:
 

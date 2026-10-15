@@ -1,5 +1,6 @@
 from src.commands.context import CommandHandlerContext
 from src.commands.ops_handlers import handle_ops_commands
+from src.commands.permissions import enforce_admin_permission
 from src.commands.player_handlers import handle_player_commands
 from src.commands.report_handlers import handle_report_commands
 from src.commands.routing import command_channel_id, enforce_command_channel, format_help_text, is_supported_command
@@ -34,6 +35,7 @@ async def handle_incoming_message(
     db_get_state=None,
     db_set_state=None,
     match_recap_channel_id=None,
+    admin_role_id=None,
 ):
     content = message.content.strip()
     content_lower = content.casefold()
@@ -72,13 +74,23 @@ async def handle_incoming_message(
         worker_stats=worker_stats,
         db_get_state=db_get_state,
         db_set_state=db_set_state,
+        admin_role_id=admin_role_id,
     )
 
     if await enforce_command_channel(ctx):
         return
-    if await handle_ops_commands(ctx):
+    if not content.startswith("!") or not is_supported_command(content_lower):
         return
-    if await handle_player_commands(ctx):
-        return
-    if await handle_report_commands(ctx):
-        return
+
+    token = request_id_context.set(create_request_id("cmd"))
+    try:
+        if await enforce_admin_permission(ctx):
+            return
+        if await handle_ops_commands(ctx):
+            return
+        if await handle_player_commands(ctx):
+            return
+        if await handle_report_commands(ctx):
+            return
+    finally:
+        request_id_context.reset(token)

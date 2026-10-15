@@ -636,6 +636,7 @@ async def on_message(message):
         db_get_state=db_get_state,
         db_set_state=db_set_state,
         match_recap_channel_id=MATCH_RECAP_CHANNEL_ID,
+        admin_role_id=cfg.ADMIN_ROLE_ID or None,
     )
 
 
