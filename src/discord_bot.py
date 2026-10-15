@@ -1,17 +1,19 @@
 import asyncio
+import concurrent.futures
 import contextvars
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import discord
 from discord import app_commands
 
 from src import config as cfg
 from src import db as dbm
+from src.commands.slash_handlers import handle_health_slash, handle_sync_command
 from src.discord_command_handlers import handle_incoming_message
 from src.discord_text import create_request_id
-from src.constants import ADD_COMMAND, BACKFILL_COMMAND, DEBUG_PLAYER_COMMAND, HEALTH_COMMAND, DAILY_COMMAND, REMOVE_COMMAND, RIOT_TEST_COMMAND, TEST_COMMAND, WEEK_COMMAND
+from src.constants import ADD_COMMAND, BACKFILL_COMMAND, DEBUG_PLAYER_COMMAND, HEALTH_COMMAND, DAILY_COMMAND, REMOVE_COMMAND, RIOT_TEST_COMMAND, SYNC_COMMAND, TEST_COMMAND, WEEK_COMMAND
 from src.poro_service import PoroService
 from src.riot_api import RiotApiClient
 from src.runtime.alerts import RiotAlertState, trigger_riot_key_alert as runtime_trigger_riot_key_alert
@@ -138,48 +140,16 @@ client = RiftwatcherClient(intents=intents)
 
 @client.tree.command(name="health", description="Check Riftwatcher Poro system status and Riot API connectivity.")
 async def health_slash(interaction: discord.Interaction):
-    # Reuse the same logic from !health
-    stats = await poro_service.run_health_check(START_MONOTONIC, worker_stats=WORKER_STATS)
-    uptime = str(timedelta(seconds=stats["uptime_seconds"]))
-    top_backfill_offsets = ", ".join(stats.get("top_backfill_offsets", [])) or "none"
-    wstats = stats.get("worker_stats") or {}
-    workers_line = ""
-    if wstats:
-        parts = []
-        for key, value in wstats.items():
-            segment = f"{key}: {value['cycles']}ok/{value['errors']}err"
-            if "elapsed_ms_last" in value:
-                segment += (
-                    f" ({value.get('elapsed_ms_last', 0)}ms last/"
-                    f"{value.get('elapsed_ms_avg', 0)}ms avg/"
-                    f"{value.get('elapsed_ms_max', 0)}ms max)"
-                )
-            parts.append(segment)
-        workers_line = f"\n- Workers: `{' | '.join(parts)}`"
-    baseline_age_seconds = stats.get("baseline_age_seconds")
-    if baseline_age_seconds is None:
-        baseline_line = "\n- Gamer Score baselines: `not yet built`"
-    else:
-        age = str(timedelta(seconds=baseline_age_seconds))
-        baseline_line = (
-            f"\n- Gamer Score baselines: "
-            f"`{stats['baseline_roles']} roles, {stats['baseline_samples']} samples (built {age} ago)`"
-        )
-
-    content = (
-        "**Health OK**\n"
-        f"- Uptime: `{uptime}`\n"
-        f"- Tracked players: `{stats['tracked_players']}`\n"
-        f"- DB: `{'ok' if stats['db_ok'] else 'down'}`\n"
-        f"- Match cache entries: `{stats['match_cache_entries']}`\n"
-        f"- Report cache active: `{'yes' if stats['request_cache_active'] else 'no'}`\n"
-        f"- Backfill cursors active: `{stats.get('players_with_backfill_offset', 0)}/{stats['tracked_players']}`\n"
-        f"- Backfill max offset: `{stats.get('max_backfill_offset', 0)}`\n"
-        f"- Backfill top offsets: `{top_backfill_offsets}`"
-        f"{baseline_line}"
-        f"{workers_line}"
+    await handle_health_slash(
+        interaction,
+        events_channel_id=EVENTS_CHANNEL_ID,
+        poro_service=poro_service,
+        start_monotonic=START_MONOTONIC,
+        worker_stats=WORKER_STATS,
+        log=log,
     )
-    await interaction.response.send_message(content)
+
+
 DAILY_REQUEST_LOCK = asyncio.Lock()
 
 MESSAGE_STATE = create_message_state()
@@ -187,6 +157,7 @@ LAST_REPORT_MESSAGE = MESSAGE_STATE["last_report_message"]
 LAST_WEEKLY_REPORT_MESSAGE = MESSAGE_STATE["last_weekly_report_message"]
 REPORT_RUNTIME_STATE = {"last_cache_cleanup_at": 0.0}
 STARTUP_SCOREBOARD_INIT_DONE = False
+DEFAULT_EXECUTOR_CONFIGURED = False
 BACKGROUND_REFRESH_TASK = None
 BACKGROUND_RECAP_TASK = None
 BACKGROUND_RANK_TASK = None
@@ -507,12 +478,13 @@ async def background_worker_stall_notifier():
 
 @client.event
 async def on_ready():
-    if cfg.ASYNCIO_THREAD_POOL_SIZE > 0:
-        import concurrent.futures
+    global BACKGROUND_REFRESH_TASK, BACKGROUND_RECAP_TASK, BACKGROUND_RANK_TASK, BACKGROUND_BACKFILL_TASK, BACKGROUND_STALL_TASK, STARTUP_SCOREBOARD_INIT_DONE, DEFAULT_EXECUTOR_CONFIGURED
+    # on_ready fires again after every reconnect; only install the custom executor once.
+    if cfg.ASYNCIO_THREAD_POOL_SIZE > 0 and not DEFAULT_EXECUTOR_CONFIGURED:
         loop = asyncio.get_running_loop()
         loop.set_default_executor(concurrent.futures.ThreadPoolExecutor(max_workers=cfg.ASYNCIO_THREAD_POOL_SIZE))
+        DEFAULT_EXECUTOR_CONFIGURED = True
 
-    global BACKGROUND_REFRESH_TASK, BACKGROUND_RECAP_TASK, BACKGROUND_RANK_TASK, BACKGROUND_BACKFILL_TASK, BACKGROUND_STALL_TASK, STARTUP_SCOREBOARD_INIT_DONE
     log(f"[startup] Logged in as {client.user} (id={client.user.id})")
     log(f"[startup] Use {TEST_COMMAND} in channel {EVENTS_CHANNEL_ID} to test sending.")
     log(f"[startup] Use {RIOT_TEST_COMMAND} in channel {EVENTS_CHANNEL_ID} to test Riot API access.")
@@ -579,27 +551,16 @@ async def on_ready():
             except Exception as exc:
                 log(f"[startup] Failed to initialize weekly scoreboard: {exc}")
         STARTUP_SCOREBOARD_INIT_DONE = True
+
+
 @client.event
 async def on_message(message):
     if message.author.bot:
         return
 
     content = message.content.strip()
-    if content == "!sync":
-        if not message.author.guild_permissions.administrator:
-            await message.channel.send("You need administrator permissions to sync commands.")
-            return
-
-        status = await message.channel.send("Syncing slash commands...")
-        try:
-            # Copy global commands to this specific guild for instant updates
-            client.tree.copy_global_to(guild=message.guild)
-            synced = await client.tree.sync(guild=message.guild)
-            await status.edit(content=f"Successfully synced {len(synced)} commands to this server.")
-            log(f"[startup] Synced {len(synced)} guild commands via !sync.")
-        except Exception as exc:
-            await status.edit(content=f"Failed to sync commands: {exc}")
-            log(f"[error] Sync failed: {exc}")
+    if content == SYNC_COMMAND:
+        await handle_sync_command(message, tree=client.tree, log=log)
         return
 
     await handle_incoming_message(

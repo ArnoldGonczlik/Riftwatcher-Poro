@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import requests
 
@@ -13,7 +13,7 @@ from src.constants import (
     TEST_COMMAND,
     TTS_COMMAND,
 )
-from src.discord_text import parse_streak_tts_enabled, streak_tts_enabled_state_key
+from src.discord_text import format_health_report, parse_streak_tts_enabled, streak_tts_enabled_state_key
 
 
 async def handle_ops_commands(ctx):
@@ -58,46 +58,7 @@ async def handle_ops_commands(ctx):
 
     if content_lower == HEALTH_COMMAND.casefold():
         stats = await ctx.poro_service.run_health_check(ctx.start_monotonic, worker_stats=ctx.worker_stats)
-        uptime = str(timedelta(seconds=stats["uptime_seconds"]))
-        top_backfill_offsets = ", ".join(stats.get("top_backfill_offsets", [])) or "none"
-        wstats = stats.get("worker_stats") or {}
-        workers_line = ""
-        if wstats:
-            parts = []
-            for key, value in wstats.items():
-                segment = f"{key}: {value['cycles']}ok/{value['errors']}err"
-                if "elapsed_ms_last" in value:
-                    segment += (
-                        f" ({value.get('elapsed_ms_last', 0)}ms last/"
-                        f"{value.get('elapsed_ms_avg', 0)}ms avg/"
-                        f"{value.get('elapsed_ms_max', 0)}ms max)"
-                    )
-                parts.append(segment)
-            workers_line = f"\n- Workers: `{' | '.join(parts)}`"
-        baseline_age_seconds = stats.get("baseline_age_seconds")
-        if baseline_age_seconds is None:
-            baseline_line = "\n- Gamer Score baselines: `not yet built`"
-        else:
-            age = str(timedelta(seconds=baseline_age_seconds))
-            baseline_line = (
-                f"\n- Gamer Score baselines: "
-                f"`{stats['baseline_roles']} roles, {stats['baseline_samples']} samples (built {age} ago)`"
-            )
-        await ctx.message.channel.send(
-            (
-                "Health OK\n"
-                f"- Uptime: `{uptime}`\n"
-                f"- Tracked players: `{stats['tracked_players']}`\n"
-                f"- DB: `{'ok' if stats['db_ok'] else 'down'}`\n"
-                f"- Match cache entries: `{stats['match_cache_entries']}`\n"
-                f"- Report cache active: `{'yes' if stats['request_cache_active'] else 'no'}`\n"
-                f"- Backfill cursors active: `{stats.get('players_with_backfill_offset', 0)}/{stats['tracked_players']}`\n"
-                f"- Backfill max offset: `{stats.get('max_backfill_offset', 0)}`\n"
-                f"- Backfill top offsets: `{top_backfill_offsets}`"
-                f"{baseline_line}"
-                f"{workers_line}"
-            )
-        )
+        await ctx.message.channel.send(format_health_report(stats))
         ctx.log("[health] Sent health status message.")
         return True
 
