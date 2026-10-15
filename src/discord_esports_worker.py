@@ -2,6 +2,7 @@ import asyncio
 import json
 import time
 
+from src.esports_api import EsportsAuthError
 from src.esports_logic import (
     diff_events,
     events_in_window,
@@ -14,8 +15,17 @@ from src.report_logic import get_report_cycle_key, get_report_cycle_start_unix_s
 
 ESPORTS_SNAPSHOT_STATE_KEY = "esports_match_snapshot"
 ESPORTS_SCHEDULE_STATE_KEY = "esports_schedule_posted_cycle"
+ESPORTS_AUTH_ALERT_STATE_KEY = "esports_auth_alert_sent"
 # Snapshot entries no longer returned by the API are dropped after this age.
 SNAPSHOT_RETENTION_SECONDS = 7 * 24 * 3600
+
+ESPORTS_AUTH_ALERT_TEXT = (
+    "\u26A0\uFE0F LoL Esports API rejected the request ({reason}). "
+    "`ESPORTS_API_KEY` is missing or Riot rotated it. Grab the current `x-api-key` header from any "
+    "`esports-api.lolesports.com` request on lolesports.com (browser DevTools \u2192 Network) "
+    "and update the `ESPORTS_API_KEY` variable. Esports updates are paused until then."
+)
+ESPORTS_AUTH_RECOVERED_TEXT = "\u2705 LoL Esports API key is working again; esports updates resumed."
 
 
 def _load_snapshot(raw_value):
@@ -34,7 +44,72 @@ def _load_snapshot(raw_value):
     }
 
 
+async def _set_auth_alert_flag(db_set_state, value):
+    await asyncio.to_thread(db_set_state, ESPORTS_AUTH_ALERT_STATE_KEY, value)
+
+
+async def _report_auth_failure(*, channel, reason, db_get_state, db_set_state, log):
+    if await asyncio.to_thread(db_get_state, ESPORTS_AUTH_ALERT_STATE_KEY) == "1":
+        return
+    try:
+        await channel.send(ESPORTS_AUTH_ALERT_TEXT.format(reason=reason))
+    except Exception as exc:
+        log(f"[esports] Failed to post ESPORTS_API_KEY alert: {exc}")
+        return
+    await _set_auth_alert_flag(db_set_state, "1")
+    log(f"[esports] Posted ESPORTS_API_KEY alert: {reason}")
+
+
+async def _report_auth_recovered(*, channel, db_get_state, db_set_state, log):
+    if await asyncio.to_thread(db_get_state, ESPORTS_AUTH_ALERT_STATE_KEY) != "1":
+        return
+    try:
+        await channel.send(ESPORTS_AUTH_RECOVERED_TEXT)
+    except Exception as exc:
+        log(f"[esports] Failed to post ESPORTS_API_KEY recovery notice: {exc}")
+        return
+    await _set_auth_alert_flag(db_set_state, "0")
+    log("[esports] ESPORTS_API_KEY recovered.")
+
+
 async def process_esports_cycle(
+    *,
+    esports_client,
+    league_slugs,
+    channel,
+    report_timezone,
+    report_day_start_hour,
+    spoiler_tags,
+    db_get_state,
+    db_set_state,
+    log,
+    now_utc=None,
+):
+    try:
+        result, fetched_leagues = await _run_esports_cycle(
+            esports_client=esports_client,
+            league_slugs=league_slugs,
+            channel=channel,
+            report_timezone=report_timezone,
+            report_day_start_hour=report_day_start_hour,
+            spoiler_tags=spoiler_tags,
+            db_get_state=db_get_state,
+            db_set_state=db_set_state,
+            log=log,
+            now_utc=now_utc,
+        )
+    except EsportsAuthError as exc:
+        log(f"[esports] Auth failure: {exc}")
+        await _report_auth_failure(
+            channel=channel, reason=str(exc), db_get_state=db_get_state, db_set_state=db_set_state, log=log
+        )
+        raise
+    if fetched_leagues:
+        await _report_auth_recovered(channel=channel, db_get_state=db_get_state, db_set_state=db_set_state, log=log)
+    return result
+
+
+async def _run_esports_cycle(
     *,
     esports_client,
     league_slugs,
@@ -52,7 +127,7 @@ async def process_esports_cycle(
     league_ids = await esports_client.resolve_league_ids(league_slugs)
     if not league_ids:
         log("[esports] No valid leagues configured; skipping cycle.")
-        return {"announcements": 0, "schedule_posted": False}
+        return {"announcements": 0, "schedule_posted": False}, 0
 
     snapshot = _load_snapshot(await asyncio.to_thread(db_get_state, ESPORTS_SNAPSHOT_STATE_KEY))
     matches = snapshot["matches"]
@@ -65,6 +140,8 @@ async def process_esports_cycle(
     for slug, league_id in league_ids.items():
         try:
             raw_events = await esports_client.fetch_schedule_events(league_id)
+        except EsportsAuthError:
+            raise
         except Exception as exc:
             failures += 1
             log(f"[esports] Schedule fetch failed for {slug}: {exc}")
@@ -123,4 +200,4 @@ async def process_esports_cycle(
         ESPORTS_SNAPSHOT_STATE_KEY,
         json.dumps({"baselined_leagues": sorted(baselined), "matches": matches}, separators=(",", ":")),
     )
-    return {"announcements": sent, "schedule_posted": schedule_posted}
+    return {"announcements": sent, "schedule_posted": schedule_posted}, len(league_ids) - failures

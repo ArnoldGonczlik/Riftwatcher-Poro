@@ -576,6 +576,8 @@ async def on_ready():
                 f"leagues={','.join(cfg.ESPORTS_LEAGUES)} poll={cfg.ESPORTS_POLL_SECONDS}s "
                 f"spoilers={cfg.ESPORTS_SPOILER_TAGS}"
             )
+            if not cfg.ESPORTS_API_KEY:
+                log("[startup] Warning: ESPORTS_API_KEY is not set; esports worker will alert in the news channel.")
             if BACKGROUND_ESPORTS_TASK is None or BACKGROUND_ESPORTS_TASK.done():
                 BACKGROUND_ESPORTS_TASK = client.loop.create_task(background_esports_notifier())
         else:

@@ -211,7 +211,7 @@ Esports news, all optional:
 - `ESPORTS_LEAGUES` (`worlds`) - comma-separated lolesports league slugs, e.g. `worlds,msi,first_stand`
 - `ESPORTS_POLL_SECONDS` (`60`, min `30`)
 - `ESPORTS_SPOILER_TAGS` (`true`) - wrap scores/winners in Discord spoiler tags
-- `ESPORTS_API_KEY` (built-in lolesports.com public key) - override only if the default starts returning `403`
+- `ESPORTS_API_KEY` (no default; required when `NEWS_CHANNEL_ID` is set) - the `x-api-key` header lolesports.com sends to `esports-api.lolesports.com`. If it is missing or rejected (`401`/`403`), the bot posts an alert in `NEWS_CHANNEL_ID`
 
 ## Data Tables
 

@@ -5,10 +5,12 @@ from datetime import datetime, timezone
 import pytest
 
 from src.discord_esports_worker import (
+    ESPORTS_AUTH_ALERT_STATE_KEY,
     ESPORTS_SCHEDULE_STATE_KEY,
     ESPORTS_SNAPSHOT_STATE_KEY,
     process_esports_cycle,
 )
+from src.esports_api import EsportsAuthError
 
 UTC = timezone.utc
 
@@ -175,6 +177,49 @@ def test_partial_failure_keeps_snapshot_and_skips_schedule():
 
 
 def test_all_leagues_failing_raises_for_worker_error_stats():
-    client = FakeEsportsClient({"id-worlds": RuntimeError("403 Forbidden")})
+    client = FakeEsportsClient({"id-worlds": RuntimeError("503 Service Unavailable")})
+    state = FakeState()
+    channel = FakeChannel()
     with pytest.raises(RuntimeError):
-        run_cycle(client, FakeState(), FakeChannel(), now=datetime(2026, 10, 15, 19, 0, tzinfo=UTC))
+        run_cycle(client, state, channel, now=datetime(2026, 10, 15, 19, 0, tzinfo=UTC))
+    # Ordinary outages must not trigger the key alert.
+    assert channel.messages == []
+    assert ESPORTS_AUTH_ALERT_STATE_KEY not in state
+
+
+def test_auth_failure_posts_alert_once_then_recovery():
+    now = datetime(2026, 10, 15, 19, 0, tzinfo=UTC)
+    state = FakeState()
+    channel = FakeChannel()
+    failing = FakeEsportsClient({"id-worlds": EsportsAuthError("LoL Esports API returned HTTP 403 for getSchedule.")})
+
+    for _ in range(2):
+        with pytest.raises(EsportsAuthError):
+            run_cycle(failing, state, channel, now=now)
+
+    assert len(channel.messages) == 1
+    assert "ESPORTS_API_KEY" in channel.messages[0]
+    assert "HTTP 403" in channel.messages[0]
+    assert state[ESPORTS_AUTH_ALERT_STATE_KEY] == "1"
+
+    channel.messages.clear()
+    run_cycle(FakeEsportsClient({"id-worlds": []}), state, channel, now=now)
+    assert any("working again" in m for m in channel.messages)
+    assert state[ESPORTS_AUTH_ALERT_STATE_KEY] == "0"
+
+    channel.messages.clear()
+    run_cycle(FakeEsportsClient({"id-worlds": []}), state, channel, now=now)
+    assert not any("working again" in m for m in channel.messages)
+
+
+def test_auth_failure_during_league_lookup_alerts():
+    class LookupFails(FakeEsportsClient):
+        async def resolve_league_ids(self, slugs):
+            raise EsportsAuthError("ESPORTS_API_KEY is not set.")
+
+    state = FakeState()
+    channel = FakeChannel()
+    with pytest.raises(EsportsAuthError):
+        run_cycle(LookupFails({}), state, channel, now=datetime(2026, 10, 15, 19, 0, tzinfo=UTC))
+    assert len(channel.messages) == 1
+    assert "not set" in channel.messages[0]

@@ -102,7 +102,8 @@ ESPORTS_LEAGUES = tuple(
     for slug in get_env_str("ESPORTS_LEAGUES", "worlds").split(",")
     if slug.strip()
 )
-# Public key embedded in the lolesports.com web app (not a secret); override if Riot rotates it.
-ESPORTS_API_KEY = get_env_str("ESPORTS_API_KEY", "0TvQnueqKa5mxJntVWt0w4LpLfEkrV1Ta8rQBb9Z")
+# x-api-key used by the lolesports.com web app. Riot may rotate it; the esports worker
+# posts an alert in NEWS_CHANNEL_ID when it is missing or rejected.
+ESPORTS_API_KEY = get_env_str("ESPORTS_API_KEY", "")
 ESPORTS_POLL_SECONDS = get_env_int("ESPORTS_POLL_SECONDS", 60)
 ESPORTS_SPOILER_TAGS = get_env_bool("ESPORTS_SPOILER_TAGS", True)

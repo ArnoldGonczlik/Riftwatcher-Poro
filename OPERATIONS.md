@@ -91,8 +91,8 @@ Expected behavior (only when `NEWS_CHANNEL_ID` is set):
 
 If updates stop:
 1. Check `!health` for the `esports` worker error count; the stall watchdog alerts in `EVENTS_CHANNEL_ID` after 5 missed polls.
-2. Check logs for `[esports] Schedule fetch failed`.
-   - `403 Forbidden`: Riot rotated the public lolesports.com web key. Get the current `x-api-key` from the lolesports.com site's network requests and set `ESPORTS_API_KEY`.
+2. Check `NEWS_CHANNEL_ID` for an `ESPORTS_API_KEY` alert, and logs for `[esports] Auth failure` / `[esports] Schedule fetch failed`.
+   - `401`/`403` or key not set: Riot rotated the lolesports.com web key (or it was never configured). Get the current `x-api-key` header from any `esports-api.lolesports.com` request on lolesports.com (DevTools -> Network) and set `ESPORTS_API_KEY`. The alert is posted once (persisted as `esports_auth_alert_sent` in `bot_state`); a recovery message follows on the first successful poll.
    - Timeouts/5xx: transient API outage; the worker retries every cycle and keeps its snapshot, so no duplicate announcements are posted after recovery.
 3. `Unknown league slug` means a typo in `ESPORTS_LEAGUES` (valid examples: `worlds`, `msi`, `first_stand`, `lec`, `lck`).
 4. To force today's schedule to repost, delete the `esports_schedule_posted_cycle` row from `bot_state`.

@@ -10,6 +10,11 @@ KNOWN_LEAGUE_IDS = {
     "msi": "98767991325878492",
     "first_stand": "113464388705111224",
 }
+AUTH_FAILURE_STATUS_CODES = {401, 403}
+
+
+class EsportsAuthError(Exception):
+    """ESPORTS_API_KEY is missing or was rejected (likely rotated by Riot)."""
 
 
 class EsportsApiClient:
@@ -24,6 +29,8 @@ class EsportsApiClient:
         self._warned_unknown_slugs = set()
 
     def _get_json(self, endpoint, params=None):
+        if not self.api_key:
+            raise EsportsAuthError("ESPORTS_API_KEY is not set.")
         query = {"hl": self.locale}
         if params:
             query.update(params)
@@ -33,6 +40,8 @@ class EsportsApiClient:
             params=query,
             timeout=self.timeout,
         )
+        if response.status_code in AUTH_FAILURE_STATUS_CODES:
+            raise EsportsAuthError(f"LoL Esports API returned HTTP {response.status_code} for {endpoint}.")
         response.raise_for_status()
         return response.json()
 
