@@ -41,7 +41,7 @@ Start with:
 - `src/commands/` - command context, routing, and domain-specific handlers
 - `src/discord_text.py` - Discord text/render helpers
 - `src/poro_service.py` - report orchestration and refresh logic
-- `src/services/` - mood-service helper modules (report builder, refresh, baselines)
+- `src/services/` - report service internals (report builder, refresh, baselines)
 - `src/riot_api.py` - Riot API client, retries, match fetch/cache behavior
 - `src/discord_recap_worker.py` - recap polling and recap -> stats sync
 - `src/discord_rank_worker.py` - ranked state comparison and notifications
@@ -50,6 +50,7 @@ Start with:
 - `src/db/` - Postgres pool, schema, and persistence helpers
 - `src/report_logic.py` - pure ranking/window helpers
 - `src/rank_logic.py` - rank queue normalization and rank-change message formatting
+- `src/arena_static.py` - static Arena augment/item fallbacks
 - `tests/` - unit tests
 
 ## Features
@@ -64,6 +65,7 @@ Start with:
 - Ranked queues tracked in report:
   - Solo/Duo (`420`)
   - Flex (`440`)
+  - Ranked 5s (`710`) - counted in the Flex bucket
 - Scoreboard rank ordering uses Wilson lower bound (displayed as `Gamer Score`).
 - Match recap posts in `MATCH_RECAP_CHANNEL_ID` with:
   - queue + end time + match duration
@@ -108,9 +110,11 @@ All workers start with jitter to avoid bursty startup traffic and log cycle hear
   - posts streak callouts as separate messages (not merged into recap batches)
   - refreshes affected players' daily stats and forces scoreboard sync
 - Backfill worker (`max(120, DAILY_REFRESH_SECONDS * 2)`)
-  - only when no new matches are detected
-  - fetches a limited number of older matches into DB cache
+  - runs every cycle, paging backwards through each player's match history
+  - caches up to 3 uncached older matches per player per cycle into the DB
   - uses `cache_in_memory=False` to avoid polluting in-memory cache
+- Stall watchdog (every 30s)
+  - alerts in `EVENTS_CHANNEL_ID` when a worker has no successful cycle within its stale threshold, and posts a recovery message
 
 ## Commands
 
@@ -121,19 +125,28 @@ All workers start with jitter to avoid bursty startup traffic and log cycle hear
 - `!tts on|off|status`
 - `!Add Name#Tag`
 - `!remove Name#Tag`
+- `!profile Name#Tag`
 - `!DebugPlayer Name#Tag`
 - `!health`
 - `!backfill YYYY-MM-DD YYYY-MM-DD`
 - `!test`
 - `!riottest`
 - `!help`
+- `!sync` (server administrators only) - copies slash commands to the current server for instant availability
+
+Slash commands:
+
+- `/health` - same output as `!health`; only answers in `EVENTS_CHANNEL_ID` (elsewhere it replies privately with a pointer)
+
+Run `!sync` once after deploying a new bot so slash commands appear immediately in your server.
 
 Command routing:
 - `!Daily` in `DAILY_REPORT_CHANNEL_ID`
 - `!Weekly` in `WEEKLY_REPORT_CHANNEL_ID`
 - `!streak` in `MATCH_RECAP_CHANNEL_ID`
 - `!tts` in `EVENTS_CHANNEL_ID` or `MATCH_RECAP_CHANNEL_ID`
-- all other commands in `EVENTS_CHANNEL_ID`
+- `!sync` in any server channel
+- all other commands (and `/health`) in `EVENTS_CHANNEL_ID`
 
 ## Environment Variables
 
@@ -163,6 +176,15 @@ Optional (with defaults):
 - `LOG_JSON` (`false`)
 - `RIOT_PLATFORM_ROUTING` (`euw1`)
 - `RIOT_REGIONAL_ROUTING` (`europe`) - regional host for account/match-v5 API calls (`europe`, `americas`, `asia`)
+- `BACKFILL_STALE_THRESHOLD_SECONDS` (`0` = auto: `max(300, backfill interval * 6)`) - stall watchdog threshold for the backfill worker
+
+Low-resource hosting (NAS/IoT), all optional:
+
+- `STARTUP_PREFER_SNAPSHOT` (`false`) - build the startup scoreboard from stored stats instead of live Riot calls
+- `BASELINE_MATCH_LIMIT` (`5000`, `0` = no limit) - max cached matches loaded to build Gamer Score baselines
+- `RIOT_REQUEST_YIELD_SECONDS` (`0.0`) - pause between Riot requests to reduce CPU/network bursts
+- `WORKER_STAGGER_SECONDS` (`0`) - extra startup offset between background workers
+- `ASYNCIO_THREAD_POOL_SIZE` (`0` = Python default) - size of the default thread pool used for DB calls
 
 ## Data Tables
 

@@ -23,7 +23,8 @@ Riftwatcher Poro is a Discord worker service that tracks ranked League results f
 - `src/discord_command_handlers.py`
   - command entrypoint that delegates into modular handlers
 - `src/commands/`
-  - command context, routing/channel policy, and split handlers (`ops`, `player`, `report`)
+  - command context, routing/channel policy, and split handlers (`ops`, `player`, `report`, `slash`)
+  - `slash_handlers.py` handles `/health` and the admin-only `!sync` command
 - `src/discord_text.py`
   - pure text helpers (request id formatters, recap text helpers, report signatures)
 - `src/poro_service.py`
@@ -78,8 +79,12 @@ All workers run continuously while connected, each with startup jitter and cycle
   - refreshes affected players' daily stats and forces scoreboard update
 - Backfill worker
   - interval: `max(120, DAILY_REFRESH_SECONDS * 2)`
-  - when no new matches are detected, backfills a small number of older match payloads
+  - runs every cycle; pages backwards through each player's match history using a persisted `backfill_offset::{riot_id}` cursor
+  - caches up to 3 uncached older match payloads per player per cycle
   - stores only in DB cache for backfill fetches (`cache_in_memory=False`)
+- Stall watchdog
+  - interval: 30s
+  - alerts in `EVENTS_CHANNEL_ID` when a worker exceeds its stale threshold (backfill threshold overridable via `BACKFILL_STALE_THRESHOLD_SECONDS`); deduped, with recovery messages
 
 ## Data Flow
 
@@ -136,10 +141,10 @@ All workers run continuously while connected, each with startup jitter and cycle
 
 - `DAILY_REPORT_CHANNEL_ID`: daily scoreboard + `!Daily` command
 - `WEEKLY_REPORT_CHANNEL_ID`: weekly scoreboard + `!Weekly` command
-- `EVENTS_CHANNEL_ID`: ops/admin commands (`!help`, `!health`, `!score`, `!test`, `!riottest`, `!Add`, `!remove`, `!DebugPlayer`, `!profile`, `!backfill`, `!tts`)
+- `EVENTS_CHANNEL_ID`: ops/admin commands (`!help`, `!health`, `/health`, `!score`, `!test`, `!riottest`, `!Add`, `!remove`, `!DebugPlayer`, `!profile`, `!backfill`, `!tts`)
 - `MATCH_RECAP_CHANNEL_ID`: match recap posts, streak callouts, `!streak` and `!tts` commands
 
-All channels are required and no channel fallback chain is used.
+All channels are required and no channel fallback chain is used. `!sync` (administrators only) works in any server channel.
 
 ## Key Operational Behaviors
 
