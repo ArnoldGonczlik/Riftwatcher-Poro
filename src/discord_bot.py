@@ -137,7 +137,9 @@ intents = discord.Intents.default()
 intents.message_content = True
 class RiftwatcherClient(discord.Client):
     def __init__(self, *, intents):
-        super().__init__(intents=intents)
+        # The bot never pings intentionally; blocking all mentions bot-wide prevents
+        # @everyone/role/user ping injection through echoed user input (e.g. Riot IDs).
+        super().__init__(intents=intents, allowed_mentions=discord.AllowedMentions.none())
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self):
