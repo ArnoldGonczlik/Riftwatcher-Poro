@@ -2,6 +2,7 @@ import discord
 import requests
 
 from src.constants import DAILY_COMMAND, WEEK_COMMAND
+from src.discord_text import format_user_error
 
 
 async def handle_report_commands(ctx):
@@ -63,11 +64,13 @@ async def handle_report_commands(ctx):
                             f"in channel {ctx.daily_channel_id}."
                         )
                 except (KeyError, requests.RequestException) as exc:
-                    await status_message.edit(content=f"Daily report failed: {exc}")
-                    ctx.log(f"[poro] Daily report failed: {exc}")
+                    await status_message.edit(content=format_user_error("Daily report failed", exc, request_id))
+                    ctx.log(f"[poro] Daily report failed: {type(exc).__name__}: {exc}")
                 except Exception as exc:
-                    await status_message.edit(content=f"Daily report failed unexpectedly: {exc}")
-                    ctx.log(f"[poro] Unexpected daily report failure: {exc}")
+                    await status_message.edit(
+                        content=format_user_error("Daily report failed unexpectedly", exc, request_id)
+                    )
+                    ctx.log(f"[poro] Unexpected daily report failure: {type(exc).__name__}: {exc}")
         finally:
             ctx.request_id_context.reset(token)
         return True
@@ -111,8 +114,8 @@ async def handle_report_commands(ctx):
                 target_channel_id = getattr(target_channel, "id", ctx.weekly_report_channel_id)
                 ctx.log(f"[week] Sent weekly report in channel {target_channel_id}.")
         except Exception as exc:
-            await ctx.message.channel.send(f"Weekly report failed: {exc}")
-            ctx.log(f"[week] Weekly report failed: {exc}")
+            await ctx.message.channel.send(format_user_error("Weekly report failed", exc, request_id))
+            ctx.log(f"[week] Weekly report failed: {type(exc).__name__}: {exc}")
         finally:
             ctx.request_id_context.reset(token)
         return True

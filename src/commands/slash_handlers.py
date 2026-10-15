@@ -1,5 +1,5 @@
 from src.constants import SYNC_COMMAND
-from src.discord_text import format_health_report
+from src.discord_text import format_health_report, format_user_error
 
 
 async def handle_health_slash(
@@ -24,8 +24,8 @@ async def handle_health_slash(
     try:
         stats = await poro_service.run_health_check(start_monotonic, worker_stats=worker_stats)
     except Exception as exc:
-        log(f"[health] Slash health check failed: {exc}")
-        await interaction.followup.send(f"Health check failed: {exc}")
+        log(f"[health] Slash health check failed: {type(exc).__name__}: {exc}")
+        await interaction.followup.send(format_user_error("Health check failed", exc))
         return
     await interaction.followup.send(format_health_report(stats, title="**Health OK**"))
     log("[health] Sent slash health status message.")
@@ -51,5 +51,5 @@ async def handle_sync_command(message, *, tree, log):
         await status.edit(content=f"Successfully synced {len(synced)} commands to this server.")
         log(f"[startup] Synced {len(synced)} guild commands via {SYNC_COMMAND}.")
     except Exception as exc:
-        await status.edit(content=f"Failed to sync commands: {exc}")
-        log(f"[error] Sync failed: {exc}")
+        await status.edit(content=format_user_error("Failed to sync commands", exc))
+        log(f"[error] Sync failed: {type(exc).__name__}: {exc}")

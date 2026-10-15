@@ -114,7 +114,8 @@ def test_health_slash_reports_failure_after_defer():
     interaction = FakeInteraction(channel_id=111)
     _run_health(interaction, FakePoroService(error=RuntimeError("db down")))
     assert interaction.response.deferred is True
-    assert interaction.followup.sent == ["Health check failed: db down"]
+    assert interaction.followup.sent == ["Health check failed: internal error."]
+    assert "db down" not in interaction.followup.sent[0]
 
 
 # --- !sync ------------------------------------------------------------------
@@ -208,4 +209,4 @@ def test_sync_reports_failure():
     message = FakeMessage(author=FakeMember(administrator=True), guild="guild-1")
     tree = FakeTree(error=RuntimeError("rate limited"))
     _run_sync(message, tree)
-    assert message.channel.sent[0].content == "Failed to sync commands: rate limited"
+    assert message.channel.sent[0].content == "Failed to sync commands: internal error."

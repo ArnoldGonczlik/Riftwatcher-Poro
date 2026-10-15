@@ -13,7 +13,12 @@ from src.constants import (
     TEST_COMMAND,
     TTS_COMMAND,
 )
-from src.discord_text import format_health_report, parse_streak_tts_enabled, streak_tts_enabled_state_key
+from src.discord_text import (
+    format_health_report,
+    format_user_error,
+    parse_streak_tts_enabled,
+    streak_tts_enabled_state_key,
+)
 
 
 async def handle_ops_commands(ctx):
@@ -52,8 +57,10 @@ async def handle_ops_commands(ctx):
             )
             ctx.log(f"[test] Riot API test succeeded for {riot_id} ({puuid[:8]}...).")
         except (KeyError, requests.RequestException) as exc:
-            await ctx.message.channel.send(f"Riot API test failed: {exc}")
-            ctx.log(f"[test] Riot API test failed: {exc}")
+            await ctx.message.channel.send(
+                format_user_error("Riot API test failed", exc, ctx.request_id_context.get())
+            )
+            ctx.log(f"[test] Riot API test failed: {type(exc).__name__}: {exc}")
         return True
 
     if content_lower == HEALTH_COMMAND.casefold():
@@ -125,8 +132,10 @@ async def handle_ops_commands(ctx):
                 f"upserts={result.get('upserts', 0)} scanned={result.get('scanned_payloads', 0)}"
             )
         except Exception as exc:
-            await status_message.edit(content=f"Backfill failed: {exc}")
-            ctx.log(f"[backfill] Failed cache backfill: {exc}")
+            await status_message.edit(
+                content=format_user_error("Backfill failed", exc, ctx.request_id_context.get())
+            )
+            ctx.log(f"[backfill] Failed cache backfill: {type(exc).__name__}: {exc}")
         return True
 
     if content_lower == TTS_COMMAND.casefold():

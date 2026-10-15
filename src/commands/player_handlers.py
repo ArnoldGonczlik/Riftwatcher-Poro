@@ -6,6 +6,7 @@ from src.constants import ADD_COMMAND, DEBUG_PLAYER_COMMAND, PROFILE_COMMAND, RE
 from src.discord_recap_worker import get_ranked_streak_info
 from src.discord_text import (
     format_streak_callout,
+    format_user_error,
     parse_streak_tts_enabled,
     streak_callout_state_key,
     streak_tts_enabled_state_key,
@@ -127,8 +128,10 @@ async def handle_player_commands(ctx):
         except ValueError as exc:
             await status_message.edit(content=f"Debug report failed: {exc}")
         except (KeyError, requests.RequestException) as exc:
-            await status_message.edit(content=f"Debug report failed: {exc}")
-            ctx.log(f"[debug] Debug report failed: {exc}")
+            await status_message.edit(
+                content=format_user_error("Debug report failed", exc, ctx.request_id_context.get())
+            )
+            ctx.log(f"[debug] Debug report failed: {type(exc).__name__}: {exc}")
         return True
 
     if content_lower == STREAK_COMMAND.casefold():
@@ -230,8 +233,12 @@ async def handle_player_commands(ctx):
             await status_message.edit(content=profile_text)
             ctx.log(f"[profile] Sent profile for {riot_id}.")
         except (KeyError, requests.RequestException) as exc:
-            await status_message.edit(content=f"Profile lookup failed for `{riot_id}`: {exc}")
-            ctx.log(f"[profile] Lookup failed for {riot_id}: {exc}")
+            await status_message.edit(
+                content=format_user_error(
+                    f"Profile lookup failed for `{riot_id}`", exc, ctx.request_id_context.get()
+                )
+            )
+            ctx.log(f"[profile] Lookup failed for {riot_id}: {type(exc).__name__}: {exc}")
         return True
 
     if content_lower.startswith(f"{STREAK_COMMAND.casefold()} "):
@@ -261,8 +268,12 @@ async def handle_player_commands(ctx):
                     await asyncio.to_thread(ctx.db_set_state, streak_callout_state_key(riot_id), streak_token)
                 ctx.log(f"[streak] Manual streak callout posted for {riot_id} ({streak_count} {'wins' if is_win_streak else 'losses'}).")
         except (KeyError, requests.RequestException) as exc:
-            await status_message.edit(content=f"Streak lookup failed for `{riot_id}`: {exc}")
-            ctx.log(f"[streak] Streak lookup failed for {riot_id}: {exc}")
+            await status_message.edit(
+                content=format_user_error(
+                    f"Streak lookup failed for `{riot_id}`", exc, ctx.request_id_context.get()
+                )
+            )
+            ctx.log(f"[streak] Streak lookup failed for {riot_id}: {type(exc).__name__}: {exc}")
         return True
 
     if content_lower == ADD_COMMAND.casefold():
@@ -289,14 +300,22 @@ async def handle_player_commands(ctx):
         try:
             await ctx.riot_client.fetch_puuid(riot_id)
         except (KeyError, requests.RequestException) as exc:
-            await status_message.edit(content=f"Add failed for `{riot_id}`: {exc}")
+            await status_message.edit(
+                content=format_user_error(f"Add failed for `{riot_id}`", exc, ctx.request_id_context.get())
+            )
+            ctx.log(f"[add] Riot validation failed for {riot_id}: {type(exc).__name__}: {exc}")
             return True
 
         ctx.friends.append(riot_id)
         try:
             await asyncio.to_thread(ctx.db_upsert_player, riot_id, None)
         except Exception as exc:
-            await status_message.edit(content=f"Added `{riot_id}`, but failed to persist to postgres: {exc}")
+            await status_message.edit(
+                content=format_user_error(
+                    f"Added `{riot_id}`, but failed to persist to postgres", exc, ctx.request_id_context.get()
+                )
+            )
+            ctx.log(f"[add] Failed to persist {riot_id}: {type(exc).__name__}: {exc}")
             return True
 
         await status_message.edit(
@@ -326,7 +345,10 @@ async def handle_player_commands(ctx):
             if ctx.db_remove_player is not None:
                 await asyncio.to_thread(ctx.db_remove_player, riot_id)
         except Exception as exc:
-            await status_message.edit(content=f"Remove failed for `{riot_id}`: {exc}")
+            await status_message.edit(
+                content=format_user_error(f"Remove failed for `{riot_id}`", exc, ctx.request_id_context.get())
+            )
+            ctx.log(f"[remove] Failed to remove {riot_id}: {type(exc).__name__}: {exc}")
             return True
 
         ctx.friends[:] = [existing for existing in ctx.friends if existing.casefold() != riot_id.casefold()]

@@ -1,9 +1,43 @@
+import requests
+
 from src.discord_text import (
+    describe_error_for_user,
     format_match_duration,
     format_recap_player_line,
     format_recap_queue_name,
     format_streak_callout,
+    format_user_error,
 )
+
+
+def _http_error(status):
+    response = requests.Response()
+    response.status_code = status
+    response.url = "https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Secret/Name"
+    return requests.HTTPError(f"{status} Error for url: {response.url}", response=response)
+
+
+def test_describe_error_for_user_maps_riot_http_statuses_without_url():
+    assert "check RIOT_API_KEY" in describe_error_for_user(_http_error(403))
+    assert "HTTP 404" in describe_error_for_user(_http_error(404))
+    assert "rate limit" in describe_error_for_user(_http_error(429))
+    assert "HTTP 503" in describe_error_for_user(_http_error(503))
+    assert describe_error_for_user(_http_error(418)) == "Riot API returned HTTP 418"
+    for status in (403, 404, 429, 503, 418):
+        assert "riotgames.com" not in describe_error_for_user(_http_error(status))
+
+
+def test_describe_error_for_user_hides_unknown_exception_text():
+    exc = RuntimeError('connection to server at "10.0.0.5", port 5432 failed: password authentication failed for user "poro"')
+    assert describe_error_for_user(exc) == "internal error"
+    assert describe_error_for_user(requests.Timeout("read timed out")) == "Riot API request timed out"
+    assert describe_error_for_user(requests.ConnectionError("dns")) == "could not reach Riot API"
+    assert describe_error_for_user(KeyError("puuid")) == "unexpected response from Riot API"
+
+
+def test_format_user_error_appends_request_ref_when_available():
+    assert format_user_error("Add failed", RuntimeError("x")) == "Add failed: internal error."
+    assert format_user_error("Add failed", RuntimeError("x"), "cmd-1234") == "Add failed: internal error. (ref `cmd-1234`)"
 
 
 def test_format_recap_player_line_uses_bullet_separator():

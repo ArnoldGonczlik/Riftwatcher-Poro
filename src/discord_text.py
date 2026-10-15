@@ -1,9 +1,48 @@
 import uuid
 from datetime import timedelta
 
+import discord
+import requests
+
 
 def create_request_id(prefix):
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
+
+
+def describe_error_for_user(exc):
+    """Return a short, safe description of `exc` for posting in Discord.
+
+    Raw exception text can include DB hosts/usernames (psycopg) or full API URLs (requests),
+    so only well-known, non-sensitive categories are surfaced. Log the full exception separately.
+    """
+    if isinstance(exc, requests.HTTPError) and exc.response is not None:
+        status = exc.response.status_code
+        if status in {401, 403}:
+            return f"Riot API rejected the API key (HTTP {status}); check RIOT_API_KEY"
+        if status == 404:
+            return "not found on Riot API (HTTP 404); check the Riot ID"
+        if status == 429:
+            return "Riot API rate limit reached (HTTP 429); try again shortly"
+        if status >= 500:
+            return f"Riot API is having issues (HTTP {status}); try again later"
+        return f"Riot API returned HTTP {status}"
+    if isinstance(exc, requests.Timeout):
+        return "Riot API request timed out"
+    if isinstance(exc, requests.RequestException):
+        return "could not reach Riot API"
+    if isinstance(exc, KeyError):
+        return "unexpected response from Riot API"
+    if isinstance(exc, discord.HTTPException):
+        return f"Discord API error (HTTP {exc.status})"
+    return "internal error"
+
+
+def format_user_error(prefix, exc, request_id=None):
+    """`"<prefix>: <safe description>"`, plus a log reference when a request ID is available."""
+    text = f"{prefix}: {describe_error_for_user(exc)}."
+    if request_id:
+        text += f" (ref `{request_id}`)"
+    return text
 
 
 def report_signature(text):
