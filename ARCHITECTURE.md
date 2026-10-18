@@ -95,8 +95,14 @@ All workers run continuously while connected, each with startup jitter and cycle
   - interval: `max(30, ESPORTS_POLL_SECONDS)`
   - fetches `getSchedule` per league in `ESPORTS_LEAGUES` and diffs against `esports_match_snapshot` in `bot_state`
   - first observation per league is baseline only (no alerts)
-  - posts: live (`unstarted` -> `inProgress`), game win (`gameWins` increased), series win (`completed`)
+  - posts: live (`unstarted` -> `inProgress`), game win (`gameWins` increased, except the deciding game), series win (`completed`)
+  - snapshot never regresses: responses with an earlier state or lower score than stored (stale API cache) are ignored
+  - team order is pinned to the first-seen order per match (stored `codes`); the API swaps sides between games
+  - a `completed` match whose score doesn't yet show a series winner is held (`pending_since`) for up to 15 minutes, then posted with the winner's tally settled
   - posts today's schedule once per report day (`esports_schedule_posted_cycle`), only from a fully successful fetch
+  - on Monday's report day, first posts the week's schedule (Mon-Sun report days, split across messages if over 2000 chars); a missed Monday is skipped
+  - the weekly post is tracked in `esports_weekly_schedule_posted_week` (JSON: week, message IDs, rendered text) and edited in place for the rest of the week when matchups or times change (e.g. TBD slots resolving). It has no LIVE/score markers, so results don't cause edits. If it grows, an extra message is appended; if it's deleted, tracking stops until next Monday
+  - a resolved matchup reverting to TBD is treated as a stale response; schedules keep the stored team names (`names` in the snapshot)
   - stale threshold: `max(300, poll * 5)`; raises (counts as error) only when every league fetch fails
 
 ## Data Flow

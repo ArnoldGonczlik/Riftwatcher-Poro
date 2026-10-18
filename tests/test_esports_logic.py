@@ -1,12 +1,17 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from src.esports_logic import (
+    COMPLETION_GRACE_SECONDS,
+    align_event,
     diff_events,
     events_in_window,
     format_announcement,
     format_daily_schedule,
+    format_weekly_schedule,
     match_winner_index,
     parse_schedule_event,
+    reconcile_events,
+    restore_resolved_teams,
     snapshot_entry,
 )
 
@@ -133,6 +138,136 @@ def test_diff_new_completed_match_only_if_recent():
     assert [a["event"]["match_id"] for a in result] == ["m1"]
 
 
+# --- regressions from the Worlds 2026 Play-Ins log --------------------------
+
+
+def swapped(parsed):
+    return {**parsed, "teams": [parsed["teams"][1], parsed["teams"][0]]}
+
+
+def test_stale_state_regression_keeps_snapshot_and_does_not_repost():
+    completed = event(state="completed", wins=(3, 0), outcomes=("win", "loss"))
+    stored = snapshot_entry(completed)
+    announcements, entries = reconcile_events({"m1": stored}, [event(wins=(2, 0))], now_unix=NOW)
+    assert announcements == []
+    assert entries["m1"] == stored
+    # The fresh response afterwards must not re-announce the series.
+    assert diff_events(entries, [completed], now_unix=NOW) == []
+
+
+def test_stale_live_regression_does_not_repost_live():
+    stored = snapshot_entry(event(state="inProgress"))
+    announcements, entries = reconcile_events({"m1": stored}, [event(state="unstarted")], now_unix=NOW)
+    assert announcements == []
+    assert diff_events(entries, [event(state="inProgress")], now_unix=NOW) == []
+
+
+def test_stale_lower_score_does_not_repost_game():
+    stored = snapshot_entry(event(wins=(0, 1)))
+    announcements, entries = reconcile_events({"m1": stored}, [event(wins=(0, 0))], now_unix=NOW)
+    assert announcements == []
+    assert diff_events(entries, [event(wins=(0, 1))], now_unix=NOW) == []
+
+
+def test_align_event_keeps_first_seen_team_order():
+    stored = snapshot_entry(event(state="unstarted"))  # KC vs C9
+    flipped = swapped(event(wins=(0, 1)))  # API now lists C9 first; C9 won game 1
+    aligned = align_event(flipped, stored)
+    assert [t["code"] for t in aligned["teams"]] == ["KC", "C9"]
+    result = diff_events({"m1": stored}, [aligned], now_unix=NOW)
+    game = [a for a in result if a["kind"] == "game"][0]
+    assert aligned["teams"][game["winner_index"]]["code"] == "C9"
+    assert "**Karmine Corp** vs **Cloud9 Kia**" in format_announcement(game)
+
+
+def test_align_event_ignores_tbd_and_unrelated_orders():
+    tbd = parse_schedule_event({**raw_event(state="unstarted"), "match": {**raw_event()["match"], "teams": [{"name": "TBD", "code": "TBD"}, {"name": "TBD", "code": "TBD"}]}})
+    real = event(state="unstarted")
+    assert align_event(real, snapshot_entry(tbd)) is real
+    assert align_event(real, None) is real
+
+
+def test_completed_with_lagging_score_is_held_until_final():
+    previous = {"m1": snapshot_entry(event(wins=(2, 1)))}
+    lagging = event(state="completed", wins=(2, 1), outcomes=("win", "loss"))
+    announcements, entries = reconcile_events(previous, [lagging], now_unix=NOW)
+    assert announcements == []
+    assert entries["m1"]["state"] == "inProgress"
+    assert entries["m1"]["pending_since"] == NOW
+
+    # Still lagging a minute later: keep waiting from the original timestamp.
+    announcements, entries = reconcile_events(entries, [lagging], now_unix=NOW + 60)
+    assert announcements == []
+    assert entries["m1"]["pending_since"] == NOW
+
+    final = event(state="completed", wins=(3, 1), outcomes=("win", "loss"))
+    announcements, entries = reconcile_events(entries, [final], now_unix=NOW + 120)
+    assert [a["kind"] for a in announcements] == ["match"]
+    assert "wins the series 3-1" in format_announcement(announcements[0])
+    assert entries["m1"]["state"] == "completed"
+
+
+def test_completed_with_lagging_score_posts_settled_score_after_grace():
+    previous = {"m1": {**snapshot_entry(event(wins=(2, 1))), "pending_since": NOW - COMPLETION_GRACE_SECONDS}}
+    lagging = event(state="completed", wins=(2, 1), outcomes=("win", "loss"))
+    announcements, _ = reconcile_events(previous, [lagging], now_unix=NOW)
+    assert len(announcements) == 1
+    assert "**Karmine Corp** wins the series 3-1" in format_announcement(announcements[0])
+
+
+def test_bo1_completed_before_score_is_held():
+    previous = {"m1": snapshot_entry(event(best_of=1))}
+    lagging = event(state="completed", wins=(0, 0), best_of=1)
+    assert diff_events(previous, [lagging], now_unix=NOW) == []
+    final = event(state="completed", wins=(0, 1), outcomes=("loss", "win"), best_of=1)
+    result = diff_events(previous, [final], now_unix=NOW)
+    assert "**Cloud9 Kia** wins" in format_announcement(result[0])
+
+
+def test_deciding_game_is_left_to_the_series_announcement():
+    previous = {"m1": snapshot_entry(event(wins=(2, 0)))}
+    assert diff_events(previous, [event(wins=(3, 0))], now_unix=NOW) == []
+    bo1_previous = {"m1": snapshot_entry(event(best_of=1))}
+    assert diff_events(bo1_previous, [event(wins=(1, 0), best_of=1)], now_unix=NOW) == []
+    bo3_previous = {"m1": snapshot_entry(event(wins=(1, 0), best_of=3))}
+    result = diff_events(bo3_previous, [event(wins=(1, 1), best_of=3)], now_unix=NOW)
+    assert [a["kind"] for a in result] == ["game"]
+
+
+def tbd_event(**kwargs):
+    raw = raw_event(state="unstarted", **kwargs)
+    raw["match"]["teams"] = [{"name": "TBD", "code": "TBD"}, {"name": "TBD", "code": "TBD"}]
+    return parse_schedule_event(raw)
+
+
+def test_tbd_resolving_is_accepted_but_reverting_is_stale():
+    resolved = event(state="unstarted")
+    announcements, entries = reconcile_events({"m1": snapshot_entry(tbd_event())}, [resolved], now_unix=NOW)
+    assert announcements == []
+    assert entries["m1"]["codes"] == ["KC", "C9"]
+
+    announcements, entries = reconcile_events(entries, [tbd_event()], now_unix=NOW)
+    assert announcements == []
+    assert entries["m1"]["codes"] == ["KC", "C9"]
+
+
+def test_restore_resolved_teams_uses_stored_names():
+    entry = snapshot_entry(event(state="unstarted"))
+    restored = restore_resolved_teams(tbd_event(), entry)
+    assert [t["name"] for t in restored["teams"]] == ["Karmine Corp", "Cloud9 Kia"]
+    plain = tbd_event()
+    assert restore_resolved_teams(plain, snapshot_entry(tbd_event())) is plain
+    assert restore_resolved_teams(plain, {"codes": ["KC", "C9"]}) is plain  # legacy entry without names
+    resolved = event(state="unstarted")
+    assert restore_resolved_teams(resolved, entry) is resolved
+
+
+def test_weekly_schedule_without_status_omits_live_and_scores():
+    days = [(date(2026, 10, 23), [event(state="completed", wins=(3, 1), start="2026-10-23T17:00:00Z")])]
+    text = format_weekly_schedule(days, date(2026, 10, 19), show_status=False)[0]
+    assert "KC 3-1 C9" not in text and "\u2705" not in text
+
+
 # --- formatting -------------------------------------------------------------
 
 
@@ -179,6 +314,48 @@ def test_daily_schedule_groups_and_marks_state():
 
 def test_daily_schedule_none_when_empty():
     assert format_daily_schedule([], "2026-10-15") is None
+
+
+def test_weekly_schedule_groups_by_day_with_stages():
+    friday = [
+        event(match_id="a", state="unstarted", start="2026-10-23T17:00:00Z", block="Swiss", best_of=1),
+        event(match_id="b", state="unstarted", start="2026-10-23T18:00:00Z", block="Swiss", best_of=1),
+    ]
+    sunday = [event(match_id="c", state="completed", wins=(2, 1), start="2026-10-25T19:00:00Z", block="Swiss", best_of=3)]
+    days = [(date(2026, 10, 19), []), (date(2026, 10, 23), friday), (date(2026, 10, 25), sunday)]
+    messages = format_weekly_schedule(days, date(2026, 10, 19), spoilers=True)
+    assert len(messages) == 1
+    text = messages[0]
+    assert text.startswith("\U0001F5D3\uFE0F **Esports this week** \u00B7 Mon 19 Oct \u2013 Sun 25 Oct")
+    assert "**Mon 19 Oct**" not in text
+    assert "**Fri 23 Oct** \u00B7 Worlds Swiss" in text
+    assert "**Sun 25 Oct** \u00B7 Worlds Swiss" in text
+    assert text.count("\u2022 ") == 3
+    assert "||KC 2-1 C9||" in text
+    assert text.endswith("_Times shown in your local timezone._")
+
+
+def test_weekly_schedule_empty_week_returns_no_messages():
+    assert format_weekly_schedule([(date(2026, 10, 19), [])], date(2026, 10, 19)) == []
+
+
+def test_weekly_schedule_splits_long_weeks_between_days():
+    days = []
+    for offset in range(4):
+        day = date(2026, 10, 23 + offset)
+        events = [
+            event(match_id=f"{offset}-{i}", state="unstarted", start=f"2026-10-{23 + offset}T{17 + i}:00:00Z")
+            for i in range(4)
+        ]
+        days.append((day, events))
+    messages = format_weekly_schedule(days, date(2026, 10, 19), limit=600)
+    assert len(messages) > 1
+    assert all(len(m) <= 600 for m in messages)
+    assert messages[0].startswith("\U0001F5D3")
+    assert messages[-1].endswith("_Times shown in your local timezone._")
+    assert sum(m.count("\u2022 ") for m in messages) == 16
+    # Splits land on day boundaries, so every follow-up message starts with a day header.
+    assert all(m.startswith("**") for m in messages[1:])
 
 
 def test_events_in_window_filters_and_sorts():

@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 
 from src.report_logic import (
     accumulate_participant_performance,
@@ -11,6 +12,7 @@ from src.report_logic import (
     get_match_duration_seconds,
     get_report_cycle_key,
     get_report_cycle_start_unix_seconds,
+    get_report_day_start_unix_seconds,
     get_match_end_unix_seconds,
     get_mode_bucket,
     get_mode_totals,
@@ -19,6 +21,15 @@ from src.report_logic import (
     rank_sort_key,
     wilson_lower_bound,
 )
+
+
+def test_get_report_day_start_handles_dst_change():
+    oslo = ZoneInfo("Europe/Oslo")
+    saturday = get_report_day_start_unix_seconds(oslo, date(2026, 10, 24), 6)
+    sunday = get_report_day_start_unix_seconds(oslo, date(2026, 10, 25), 6)
+    assert saturday == int(datetime(2026, 10, 24, 4, 0, tzinfo=timezone.utc).timestamp())  # CEST
+    assert sunday == int(datetime(2026, 10, 25, 5, 0, tzinfo=timezone.utc).timestamp())  # CET
+    assert sunday - saturday == 25 * 3600
 
 
 def test_get_mode_bucket_maps_ranked_and_ignores_other_queues():

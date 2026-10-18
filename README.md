@@ -97,8 +97,9 @@ Start with:
   - kill participation numerator/denominator
 - Optional esports news in `NEWS_CHANNEL_ID` (default league: Worlds):
   - daily "Esports today" schedule at the report day start, with times rendered in each reader's local timezone
+  - weekly "Esports this week" schedule on Monday's report day start (Mon-Sun, grouped by day), posted before the daily one and edited in place as TBD matchups are decided
   - live announcement when a match starts
-  - game win updates with the running series score
+  - game win updates with the running series score (the deciding game is covered by the series announcement)
   - series (match) win announcement with the final score
   - scores/winners wrapped in spoiler tags by default (`ESPORTS_SPOILER_TAGS`)
   - data source: the LoL Esports API that powers lolesports.com (unofficial; no signup needed)

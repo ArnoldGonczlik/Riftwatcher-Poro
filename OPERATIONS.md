@@ -87,7 +87,10 @@ If a recent Arena match does not appear:
 Expected behavior (only when `NEWS_CHANNEL_ID` is set):
 - First cycle per league (`ESPORTS_LEAGUES`, default `worlds`) baselines silently: log `Baselined N events for worlds`.
 - Daily schedule posts once per report day (first poll after `REPORT_DAY_START_HOUR`, or at startup if not yet posted that day). Days without matches post nothing.
+- Weekly schedule posts once on Monday's report day, just before the daily one, then is edited in place during the week as TBD matchups are decided (log: `Updated weekly schedule`). If the bot is down all Monday, that week's post is skipped. Weeks without matches post nothing. Deleting the weekly message stops updates until next Monday.
 - Live/game/match updates post within `ESPORTS_POLL_SECONDS` (default `60`) of lolesports.com updating.
+- The deciding game has no separate "Game N" post; the series post covers it. A series post can lag up to 15 minutes if lolesports marks the match completed before the final score updates.
+- Duplicate posts with identical text usually mean two bot instances share the database (e.g. an overlapping deploy or a local run against production). Stale API responses are already ignored.
 
 If updates stop:
 1. Check `!health` for the `esports` worker error count; the stall watchdog alerts in `EVENTS_CHANNEL_ID` after 5 missed polls.
@@ -95,7 +98,7 @@ If updates stop:
    - `401`/`403` or key not set: Riot rotated the lolesports.com web key (or it was never configured). Get the current `x-api-key` header from any `esports-api.lolesports.com` request on lolesports.com (DevTools -> Network) and set `ESPORTS_API_KEY`. The alert is posted once (persisted as `esports_auth_alert_sent` in `bot_state`); a recovery message follows on the first successful poll.
    - Timeouts/5xx: transient API outage; the worker retries every cycle and keeps its snapshot, so no duplicate announcements are posted after recovery.
 3. `Unknown league slug` means a typo in `ESPORTS_LEAGUES` (valid examples: `worlds`, `msi`, `first_stand`, `lec`, `lck`).
-4. To force today's schedule to repost, delete the `esports_schedule_posted_cycle` row from `bot_state`.
+4. To force today's schedule to repost, delete the `esports_schedule_posted_cycle` row from `bot_state`. For the weekly schedule (reposts on the next Monday-report-day poll), delete `esports_weekly_schedule_posted_week`.
 
 ## Daily Scoreboard Duplicate Message Guard
 

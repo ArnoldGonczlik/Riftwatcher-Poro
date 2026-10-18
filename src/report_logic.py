@@ -324,6 +324,13 @@ def get_report_cycle_key(report_timezone, day_start_hour=6, now_utc=None):
     return cycle_start_local.date().isoformat()
 
 
+def get_report_day_start_unix_seconds(report_timezone, day, day_start_hour=6):
+    """Unix start of the report day for calendar date `day` (DST-aware)."""
+    safe_day_start_hour = max(0, min(23, int(day_start_hour)))
+    start_local = datetime(day.year, day.month, day.day, safe_day_start_hour, tzinfo=report_timezone)
+    return int(start_local.timestamp())
+
+
 def is_match_in_report_cycle(match_info, report_timezone, day_start_hour=6, now_utc=None):
     window_start = get_report_cycle_start_unix_seconds(report_timezone, day_start_hour=day_start_hour, now_utc=now_utc)
     end_ts = get_match_end_unix_seconds(match_info)
