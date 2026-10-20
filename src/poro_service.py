@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -26,6 +26,10 @@ from src.services.refresh import (
     refresh_recent_matches_snapshot as service_refresh_recent_matches_snapshot,
 )
 from src.services.report_builder import (
+    BADGE_MIN_GAMES_DAILY,
+    BADGE_MIN_GAMES_WEEKLY,
+    BADGE_PRIOR_GAMES_DAILY,
+    BADGE_PRIOR_GAMES_WEEKLY,
     LEADERBOARD_BADGES as SERVICE_LEADERBOARD_BADGES,
     build_score_breakdown_report as service_build_score_breakdown_report,
     format_report_from_results as service_format_report_from_results,
@@ -147,8 +151,18 @@ class PoroService:
         return service_with_derived_performance(performance_totals)
 
     @classmethod
-    def get_leader_badges_by_player(cls, ranked_results):
-        return service_get_leader_badges_by_player(ranked_results)
+    def get_leader_badges_by_player(
+        cls,
+        ranked_results,
+        *,
+        min_games=BADGE_MIN_GAMES_DAILY,
+        prior_games=BADGE_PRIOR_GAMES_DAILY,
+    ):
+        return service_get_leader_badges_by_player(
+            ranked_results,
+            min_games=min_games,
+            prior_games=prior_games,
+        )
 
     def format_report_from_results(
         self,
@@ -159,6 +173,8 @@ class PoroService:
         header_title="DAILY",
         empty_line_1="Looks like everyone has a life today.",
         empty_line_2="We will keep you up to date if anyone crawls back into the hole.",
+        badge_min_games=BADGE_MIN_GAMES_DAILY,
+        badge_prior_games=BADGE_PRIOR_GAMES_DAILY,
     ):
         return service_format_report_from_results(
             self,
@@ -168,6 +184,8 @@ class PoroService:
             header_title=header_title,
             empty_line_1=empty_line_1,
             empty_line_2=empty_line_2,
+            badge_min_games=badge_min_games,
+            badge_prior_games=badge_prior_games,
         )
 
     async def build_today_win_rate_report(self, progress_callback=None, prefer_snapshot=False, bypass_cache=False):
@@ -314,6 +332,8 @@ class PoroService:
                 f"Weekly report covers Monday {self.report_day_start_hour:02d}:00 "
                 f"through next Monday {self.report_day_start_hour:02d}:00."
             ),
+            badge_min_games=BADGE_MIN_GAMES_WEEKLY,
+            badge_prior_games=BADGE_PRIOR_GAMES_WEEKLY,
         )
         self.weekly_report_cache["text"] = report_text
         self.weekly_report_cache["window"] = window_key

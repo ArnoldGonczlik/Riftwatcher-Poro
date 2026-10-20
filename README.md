@@ -90,6 +90,9 @@ Start with:
   - rank down: flame message
   - first-seen unranked -> ranked transitions are baseline only (no alert)
 - Daily performance badges are computed from ranked matches only.
+  - Badges compare per-minute rates (not totals), blended toward the group average by games played so short hot streaks don't dominate.
+  - Players need at least 2 games (daily) / 3 games (weekly) to earn badges.
+  - 🔁 Grinder badge goes to whoever played the most games.
 - Expanded daily stats now track:
   - assists, gold earned, wards placed/killed
   - turret/dragon/baron takedowns

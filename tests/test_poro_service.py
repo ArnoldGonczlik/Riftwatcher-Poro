@@ -136,7 +136,7 @@ def test_get_leader_badges_by_player_marks_category_leads():
             57.1,
             {
                 "cs_total": 120,
-                "minutes_total": 20.0,
+                "minutes_total": 30.0,
                 "objective_damage": 9000,
                 "player_damage": 22000,
                 "healing": 9000,
@@ -157,6 +157,9 @@ def test_get_leader_badges_by_player_marks_category_leads():
     assert "\U0001F6E1\uFE0F" in badges["Bravo"]
     assert "\u2620\uFE0F" in badges["Bravo"]
     assert "\U0001F441\uFE0F" in badges["Bravo"]
+    # Both played 7 games, so they share the grinder badge.
+    assert "\U0001F501" in badges["Alpha"]
+    assert "\U0001F501" in badges["Bravo"]
 
 
 def test_build_report_falls_back_to_live_when_snapshot_stale():

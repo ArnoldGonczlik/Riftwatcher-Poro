@@ -16,8 +16,9 @@ from src.report_logic import (
 from src.riot_api import get_lol_name
 
 
+# Each badge compares the per-minute rate of the given total (e.g. cs_total -> CS/min).
 LEADERBOARD_BADGES = (
-    ("cs_per_min", "\U0001F33E"),
+    ("cs_total", "\U0001F33E"),
     ("objective_damage", "\U0001F3F0"),
     ("player_damage", "\U0001F4A5"),
     ("healing", "\u2764\uFE0F"),
@@ -26,6 +27,17 @@ LEADERBOARD_BADGES = (
     ("deaths", "\u2620\uFE0F"),
     ("vision_score", "\U0001F441\uFE0F"),
 )
+GRINDER_BADGE = "\U0001F501"
+
+# Minimum ranked games a player needs in the window to be eligible for any badge.
+BADGE_MIN_GAMES_DAILY = 2
+BADGE_MIN_GAMES_WEEKLY = 3
+# "Pretend games" at the group-average rate blended into each player's rate, so a
+# short hot streak is pulled toward the middle while a strong session still wins.
+# Tuned by simulating badge accuracy over real match history: accuracy is flat for
+# K=0.5-3 daily, while weekly sessions (many games each) do best with a small K.
+BADGE_PRIOR_GAMES_DAILY = 2
+BADGE_PRIOR_GAMES_WEEKLY = 1
 
 
 def rows_to_ranked_results(rows, tracked_friends, baselines=None):
@@ -85,27 +97,63 @@ def with_derived_performance(performance_totals):
     return data
 
 
-def get_leader_badges_by_player(ranked_results):
+def _award_to_max(leaders, scored, badge):
+    """Append ``badge`` to every player tied for the highest positive score."""
+    if not scored:
+        return
+    target = max(value for _, value in scored)
+    if target <= 0:
+        return
+    for name, value in scored:
+        if abs(value - target) < 1e-9:
+            leaders[name].append(badge)
+
+
+def get_leader_badges_by_player(
+    ranked_results,
+    *,
+    min_games=BADGE_MIN_GAMES_DAILY,
+    prior_games=BADGE_PRIOR_GAMES_DAILY,
+):
+    """Award category badges using per-minute rates instead of raw totals.
+
+    Each player's rate is shrunk toward the group's pooled per-minute rate:
+    ``adjusted = (games * rate + prior_games * group_rate) / (games + prior_games)``.
+    Only players with at least ``min_games`` games are eligible. The grinder badge
+    goes to the eligible player(s) with the most games.
+    """
     if not ranked_results:
         return {}
 
-    metrics = []
+    players = []
     for entry in ranked_results:
-        performance = with_derived_performance(entry[5])
-        metrics.append((entry[0], performance))
+        name, wins, losses, performance = entry[0], entry[2], entry[3], entry[5]
+        games = int(wins or 0) + int(losses or 0)
+        minutes = float(performance.get("minutes_total", 0.0) or 0.0)
+        players.append((name, games, minutes, performance))
 
-    leaders = {name: [] for name, _ in metrics}
+    leaders = {name: [] for name, *_ in players}
+    eligible = [player for player in players if player[1] >= max(1, int(min_games))]
+    if not eligible:
+        return leaders
+
+    prior_weight = max(0.0, float(prior_games))
+    with_minutes = [player for player in players if player[2] > 0]
+    pooled_minutes = sum(player[2] for player in with_minutes)
+
     for metric_key, badge in LEADERBOARD_BADGES:
-        values = [float(perf.get(metric_key, 0.0) or 0.0) for _, perf in metrics]
-        if not values:
-            continue
-        target = max(values)
-        if target <= 0:
-            continue
-        for name, perf in metrics:
-            value = float(perf.get(metric_key, 0.0) or 0.0)
-            if abs(value - target) < 1e-9:
-                leaders[name].append(badge)
+        pooled_total = sum(float(player[3].get(metric_key, 0) or 0) for player in with_minutes)
+        group_rate = (pooled_total / pooled_minutes) if pooled_minutes > 0 else 0.0
+        scored = []
+        for name, games, minutes, performance in eligible:
+            if minutes <= 0:
+                continue
+            rate = float(performance.get(metric_key, 0) or 0) / minutes
+            adjusted = (games * rate + prior_weight * group_rate) / (games + prior_weight)
+            scored.append((name, adjusted))
+        _award_to_max(leaders, scored, badge)
+
+    _award_to_max(leaders, [(name, float(games)) for name, games, *_ in eligible], GRINDER_BADGE)
     return leaders
 
 
@@ -124,6 +172,8 @@ def format_report_from_results(
     header_title="DAILY",
     empty_line_1="Looks like everyone has a life today.",
     empty_line_2="We will keep you up to date if anyone crawls back into the hole.",
+    badge_min_games=BADGE_MIN_GAMES_DAILY,
+    badge_prior_games=BADGE_PRIOR_GAMES_DAILY,
 ):
     report_lines = [f"\u2728------ **RIFTWATCHER PORO ({header_title})** ------\u2728", ""]
     updated_at = datetime.now(tz=service.report_timezone).strftime("%d.%m.%Y %H:%M")
@@ -141,7 +191,11 @@ def format_report_from_results(
         )
         return "\n".join(report_lines)
 
-    badges_by_player = get_leader_badges_by_player(ranked_results)
+    badges_by_player = get_leader_badges_by_player(
+        ranked_results,
+        min_games=badge_min_games,
+        prior_games=badge_prior_games,
+    )
     for index, (lol_name, mode_records, wins, losses, win_rate, _performance, *rest) in enumerate(ranked_results):
         wilson_score = wilson_lower_bound(wins, losses)
         gamer_score = rest[0] if rest else wilson_score * 100
