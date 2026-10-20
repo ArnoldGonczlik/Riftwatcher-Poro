@@ -294,6 +294,11 @@ def format_recap_player_line(
 def format_streak_callout(riot_id, streak_count, is_win_streak):
     name = riot_id.split("#", 1)[0]
     if is_win_streak:
+        if streak_count >= 10:
+            return (
+                f"\U0001F409 **FINAL BOSS UNLOCKED** `{name}` has won `{streak_count}` ranked games in a row.\n"
+                "Enemy teams are dodging on sight. The lobby fears you."
+            )
         if streak_count >= 8:
             return (
                 f"\U0001F451 **LEGENDARY** `{name}` is on a `{streak_count}`-game ranked win streak!\n"

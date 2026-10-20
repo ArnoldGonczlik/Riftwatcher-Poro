@@ -82,6 +82,12 @@ def test_format_streak_callout_loss_tier_boundaries():
     assert "BIOHAZARD IN THE LOBBY" in format_streak_callout("Alpha#NA1", 20, False)
 
 
+def test_format_streak_callout_win_tier_boundaries():
+    assert "LEGENDARY" in format_streak_callout("Alpha#NA1", 9, True)
+    assert "FINAL BOSS UNLOCKED" in format_streak_callout("Alpha#NA1", 10, True)
+    assert "FINAL BOSS UNLOCKED" in format_streak_callout("Alpha#NA1", 15, True)
+
+
 def test_format_recap_queue_name_labels_arena_3x6():
     assert format_recap_queue_name(1750) == "🏟️ Arena 3x6"
 
