@@ -66,10 +66,20 @@ def test_format_recap_player_line_uses_bullet_separator():
 def test_format_streak_callout_has_banter_tone():
     win_text = format_streak_callout("Alpha#NA1", 3, True)
     loss_text = format_streak_callout("Alpha#NA1", 5, False)
+    loss_text_10 = format_streak_callout("Alpha#NA1", 10, False)
+    loss_text_13 = format_streak_callout("Alpha#NA1", 13, False)
 
     assert "Alpha" in win_text
     assert "wins in a row" in win_text
     assert "Tilt Watch" in loss_text
+    assert "UNINSTALL PROTOCOL" in loss_text_10
+    assert "BIOHAZARD IN THE LOBBY" in loss_text_13
+
+
+def test_format_streak_callout_loss_tier_boundaries():
+    assert "FULL TILT" in format_streak_callout("Alpha#NA1", 9, False)
+    assert "UNINSTALL PROTOCOL" in format_streak_callout("Alpha#NA1", 12, False)
+    assert "BIOHAZARD IN THE LOBBY" in format_streak_callout("Alpha#NA1", 20, False)
 
 
 def test_format_recap_queue_name_labels_arena_3x6():

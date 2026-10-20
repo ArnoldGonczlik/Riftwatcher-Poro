@@ -308,6 +308,16 @@ def format_streak_callout(riot_id, streak_count, is_win_streak):
             f"\u2728 **Momentum** `{name}` is now `{streak_count}` wins in a row in ranked.\n"
             "Keep the streak alive."
         )
+    if streak_count >= 13:
+        return (
+            f"\u2623\uFE0F **BIOHAZARD IN THE LOBBY** `{name}` just locked in `{streak_count}` ranked losses in a row.\n"
+            "Queuing up again is considered domestic terrorism. Step away from the PC."
+        )
+    if streak_count >= 10:
+        return (
+            f"\U0001F5D1\uFE0F **UNINSTALL PROTOCOL** `{name}` is officially on a `{streak_count}`-game ranked loss streak.\n"
+            "You are converting expensive electricity into pure defeat. Delete the game and apologize to your router."
+        )
     if streak_count >= 8:
         return (
             f"\U0001F6D1 **FULL TILT** `{name}` is on a `{streak_count}`-game ranked loss streak.\n"
