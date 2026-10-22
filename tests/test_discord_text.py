@@ -96,6 +96,18 @@ def test_format_recap_queue_name_labels_ranked_5s():
     assert format_recap_queue_name(710) == "🏆 Ranked 5s"
 
 
+def test_format_recap_queue_name_labels_normal_draft():
+    assert format_recap_queue_name(400) == "🎯 Normal Draft"
+
+
+def test_format_recap_queue_name_labels_aram():
+    assert format_recap_queue_name(450) == "❄️ ARAM"
+
+
+def test_format_recap_queue_name_falls_back_for_unknown_queue():
+    assert format_recap_queue_name(99999) == "🎯 Queue 99999"
+
+
 def test_format_recap_player_line_uses_arena_placement():
     participant = {
         "championName": "Sett",

@@ -128,7 +128,32 @@ def format_recap_queue_name(queue_id):
         return "\U0001F3DF\uFE0F Arena 3x6"
     if queue_id in ARENA_QUEUE_IDS:
         return "\U0001F3DF\uFE0F Arena"
+    label = RECAP_QUEUE_LABELS.get(queue_id)
+    if label:
+        return label
     return f"\U0001F3AF Queue {queue_id}"
+
+
+RECAP_QUEUE_LABELS = {
+    400: "\U0001F3AF Normal Draft",
+    430: "\U0001F3AF Normal Blind",
+    480: "\u26A1 Swiftplay",
+    490: "\u26A1 Quickplay",
+    450: "\u2744\uFE0F ARAM",
+    2400: "\u2744\uFE0F ARAM Mayhem",
+    700: "\u2694\uFE0F Clash",
+    720: "\u2694\uFE0F ARAM Clash",
+    900: "\U0001F3B2 ARURF",
+    1900: "\U0001F3B2 URF",
+    1020: "\U0001F3B2 One for All",
+    1300: "\U0001F3B2 Nexus Blitz",
+    830: "\U0001F916 Co-op vs AI",
+    840: "\U0001F916 Co-op vs AI",
+    850: "\U0001F916 Co-op vs AI",
+    870: "\U0001F916 Co-op vs AI",
+    880: "\U0001F916 Co-op vs AI",
+    890: "\U0001F916 Co-op vs AI",
+}
 
 
 def format_match_duration(match_duration_seconds):
