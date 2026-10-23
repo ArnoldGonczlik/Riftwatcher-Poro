@@ -1,20 +1,25 @@
 # Riftwatcher Poro Operations Runbook
 
-## Riot 401 Recovery
+## Riot API Key Rejected (401/403)
 
 Symptom:
-- Logs include `Riot API returned 401 Unauthorized`.
+- `Riot API returned 401 Unauthorized` or `403 Forbidden` alert in `EVENTS_CHANNEL_ID`.
 - Bot can no longer fetch Riot data.
 
+Detection:
+- `401` from any Riot endpoint, or `403` from account-v1/status-v4 (available to every key), counts as a rejected key.
+- A `403` from other endpoints can be an endpoint restriction, so the bot confirms it with a `lol/status/v4` probe (at most once per 5 minutes; log: `Key probe after 403: key rejected|ok`).
+
 Actions:
-1. Update `RIOT_API_KEY` in Railway project variables.
-2. Redeploy the service.
+1. Update `RIOT_API_KEY` in your host's environment variables (e.g. Railway project variables).
+2. Redeploy/restart the service.
 3. Run `!riottest` in `EVENTS_CHANNEL_ID`.
-4. Confirm `!health` shows DB/workers healthy and recap/report activity resumes.
+4. Confirm the `✅ Riot API key is working again` message and that `!health` shows DB/workers healthy.
 
 Notes:
-- The 401 alert is deduped in `bot_state` (`riot_401_alert_sent`) to avoid spam.
-- If needed for a fresh alert cycle, clear that state key manually in DB.
+- The alert is posted once and deduped in `bot_state` (`riot_401_alert_sent`, also used for 403); the flag is only set after the alert was actually sent.
+- The first successful Riot request afterwards posts the recovery message and resets the flag to `0`, so the next expiry alerts again. The flag survives restarts, so recovery is also posted after a redeploy with a new key.
+- If the recovery message can't be posted, it is retried at most once a minute.
 
 ## Streak TTS Behavior
 
@@ -31,6 +36,18 @@ Scope:
   - automatic streak callouts from recap worker
   - manual `!streak Name#Tag` callouts
 - Does not affect recap messages themselves.
+- `!tts on|off` requires Manage Server/Administrator or `ADMIN_ROLE_ID`; `!tts status` is open to everyone.
+- Stored in `bot_state` as `streak_tts_enabled` (default ON when unset).
+
+## Command Permission Denied
+
+Symptom:
+- `!Add`, `!remove`, `!backfill`, or `!tts on|off` replies with "requires the **Manage Server** permission".
+
+Actions:
+1. Give the member Manage Server (or Administrator), or set `ADMIN_ROLE_ID` to a role they hold and redeploy.
+2. `!sync` is stricter: it requires Administrator.
+3. Logs show `[auth] Denied <command> for author <id>`.
 
 ## Historical Stats Backfill
 
@@ -66,7 +83,7 @@ If behavior looks merged:
 ## Arena Recap Troubleshooting
 
 Expected behavior:
-- Queue `1750` posts as `Arena 3x6`.
+- Queue `1750` posts as `Arena 3x6`; queues `1700`/`1710` post as `Arena`.
 - Arena player lines use placement/team instead of lane role.
 - Augments and items are shown by name when static data can be loaded; raw IDs are used as fallback.
 - Skillshots hit/dodged are shown when Riot includes those challenge stats.
@@ -80,7 +97,7 @@ If a recent Arena match does not appear:
    - `skipped_remakes` indicates remake/short-duration filtering.
    - `skipped_no_tracked` indicates the fetched match did not include tracked participants.
 3. If the daily refresh sees `matches=1 total=0W-0L solo=0W-0L flex=0W-0L`, that can be normal for Arena because daily scoreboard totals only include solo/flex ranked queues.
-4. If augment/item names are missing, verify outbound access to CommunityDragon/Data Dragon from the host. The recap still works with raw IDs when static data is unavailable.
+4. If augment/item names are missing, verify outbound access to CommunityDragon/Data Dragon from the host. The recap still works with raw IDs when static data is unavailable. Successful loads are cached for the process lifetime; a failed source is retried on the next Arena recap at least 10 minutes later.
 
 ## Esports News Troubleshooting
 
@@ -110,47 +127,60 @@ Current behavior:
 - Tracked message state is cleared only when Discord returns `NotFound` or `Forbidden`.
 
 Troubleshooting:
-1. Confirm deployment includes commit `39b522c` or later.
-2. Check logs for `NotFound`/`Forbidden` while fetching tracked daily/weekly messages.
-3. Verify bot permissions in `DAILY_REPORT_CHANNEL_ID` still allow reading message history and editing messages.
-4. If IDs were previously reset due to old behavior, run `!Daily` once to re-anchor tracked message IDs.
+1. Check logs for `NotFound`/`Forbidden` while fetching tracked daily/weekly messages.
+2. Verify bot permissions in `DAILY_REPORT_CHANNEL_ID` still allow reading message history and editing messages.
+3. If IDs were previously reset due to old behavior, run `!Daily` once to re-anchor tracked message IDs.
 
-## GitLab Deploy Rules
+## Stalled Worker Alerts
 
-Current pipeline behavior:
-- `test` job runs on pushes and merge requests.
-- `deploy_to_railway` runs when:
-  - `FORCE_DEPLOY == "1"`, or
-  - commit is on default branch and changed files include:
-    - `src/**/*`
-    - `requirements.txt`
-    - `Procfile`
-    - `railway.json`
-    - `.gitlab-ci.yml`
+Symptom:
+- `Worker <name> appears stalled` in `EVENTS_CHANNEL_ID`.
+
+Thresholds (no successful cycle for):
+- `refresh`, `rank`: `max(90, max(30, DAILY_REFRESH_SECONDS) * 3)` seconds
+- `recap`: `max(90, max(30, MATCH_RECAP_POLL_SECONDS) * 3)` seconds
+- `backfill`: `BACKFILL_STALE_THRESHOLD_SECONDS`, or `max(300, max(120, DAILY_REFRESH_SECONDS * 2) * 6)` when unset/0
+- `esports`: `max(300, max(30, ESPORTS_POLL_SECONDS) * 5)` seconds
+
+Actions:
+1. Check `!health` for that worker's error count and latency.
+2. Search logs for `[<worker>] Unexpected` errors.
+3. A recovery message posts automatically after the next successful cycle. Alert state is persisted as `worker_stall_alert_sent::<worker>`, so restarts don't repeat alerts.
+
+## CI & Deploy
+
+Current behavior:
+- GitHub Actions workflow `Python CI` (`.github/workflows/test.yml`) runs `python -m pytest -q` on Python 3.11 for pushes and pull requests to `main`.
+- CI has no deploy job. Railway builds and deploys the service from the connected repository based on the Railway service settings.
+- Railway uses `railway.json`: start command `python -m src.app`, restart policy `ALWAYS` (max 10 retries). `Procfile` (`worker: python -m src.app`) covers Procfile-based hosts.
 
 Implication:
-- Test-only commits normally do not deploy.
+- Check that the CI run is green before merging to the branch Railway deploys from.
+- Only one instance should run against a database at a time (see duplicate-post notes in the esports section).
 
 ## Health Triage Checklist (`!health`)
 
 Check in this order:
 1. `DB: ok`
-2. Workers line (`refresh`, `rank`, `recap`, `backfill`) shows cycles increasing and low errors.
+2. `Workers` line shows `<worker>: <ok>ok/<err>err (<last>ms last/<avg>ms avg/<max>ms max)` for `refresh`, `rank`, `recap`, `backfill` (and `esports` when enabled), with ok counts increasing and low errors.
 3. `Backfill cursors active` and `Backfill max offset` are not growing unexpectedly for long periods.
 4. `Match cache entries` and `Report cache active` are sensible for current activity.
-5. Baselines line is present once score baselines are built.
+5. `Gamer Score baselines` shows roles/samples once built (`not yet built` right after startup is normal).
+
+`/health` returns the same report but only answers in `EVENTS_CHANNEL_ID` (elsewhere it replies privately with a pointer). If `/health` is missing, an Administrator should run `!sync` once.
 
 Fast diagnosis patterns:
 - `DB: down`: investigate DB connectivity/credentials first.
 - Worker errors rising with no cycle growth: inspect logs for failing external API/channel access.
 - Recap issues with healthy DB: verify `MATCH_RECAP_CHANNEL_ID` permissions and Riot API health.
+- Command errors show a short reason plus `ref <id>`; search the logs for that ref to get the full exception.
 
 ## Local Testing & Smoke Checks
 
 For developers running a local instance for testing:
 
-1. **Environment**: Ensure all required variables from `README.md` are in your `.env`.
-2. **Verify Tests**: `python -m pytest -q` (requires no active bot or DB).
+1. **Environment**: Ensure all required variables from `README.md` are in your `.env` (copy `.env.example`).
+2. **Verify Tests**: `python -m pytest -q` (requires no active bot, DB, or real credentials; `tests/conftest.py` sets dummy values).
 3. **Smoke Test Command List**:
    - `!health` (Check DB and worker cycles)
    - `!Daily` (Trigger scoreboard update)

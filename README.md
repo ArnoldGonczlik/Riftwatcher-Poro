@@ -37,8 +37,10 @@ Start with:
 
 - `src/app.py` - process entrypoint
 - `src/discord_bot.py` - runtime wiring, startup logs, worker scheduling
+- `src/config.py` - environment loading and validation
+- `src/constants.py` - `!command` names
 - `src/discord_command_handlers.py` - command entrypoint/delegator
-- `src/commands/` - command context, routing, and domain-specific handlers
+- `src/commands/` - command context, channel routing, author permissions, and domain-specific handlers (`ops`, `player`, `report`, `slash`)
 - `src/discord_text.py` - Discord text/render helpers
 - `src/poro_service.py` - report orchestration and refresh logic
 - `src/services/` - report service internals (report builder, refresh, baselines)
@@ -52,7 +54,7 @@ Start with:
 - `src/db/` - Postgres pool, schema, and persistence helpers
 - `src/report_logic.py` - pure ranking/window helpers
 - `src/rank_logic.py` - rank queue normalization and rank-change message formatting
-- `src/arena_static.py` - static Arena augment/item fallbacks
+- `src/arena_static.py` - Arena augment/item display-name loader (CommunityDragon/Data Dragon)
 - `tests/` - unit tests
 
 ## Features
@@ -68,28 +70,39 @@ Start with:
   - Solo/Duo (`420`)
   - Flex (`440`)
   - Ranked 5s (`710`) - counted in the Flex bucket
-- Scoreboard rank ordering uses Wilson lower bound (displayed as `Gamer Score`).
-- Match recap posts in `MATCH_RECAP_CHANNEL_ID` with:
-  - queue + end time + match duration
-  - champion/role for ranked Summoner's Rift queues
-  - W/L, K/D/A, CS/min
+- Scoreboards are ordered by `Gamer Score` (0-100):
+  - 65% Wilson lower bound of the ranked win rate (z = 1.40) + 35% role-relative performance percentile
+  - the performance share ramps in over the first 8 ranked games of the window
+  - performance percentiles compare per-minute stats against same-role baselines built from cached ranked matches (`BASELINE_MATCH_LIMIT`)
+  - falls back to pure Wilson when no baseline or role is available yet
+  - `!score` shows the breakdown per player
+- Match recap posts in `MATCH_RECAP_CHANNEL_ID` for any queue a tracked player finishes (remakes are skipped):
+  - queue label + end time + match duration
+  - ranked labels for Solo/Duo, Flex and Ranked 5s; named labels for common non-ranked queues (Normal Draft/Blind, Swiftplay, Quickplay, ARAM, ARAM Mayhem, Clash, ARAM Clash, ARURF, URF, One for All, Nexus Blitz, Co-op vs AI); other queues show `Queue <id>`
+  - champion/role, W/L, K/D/A, CS/min
   - player/objective damage, damage taken, healing, vision
-  - Arena (`1750`) placement/team formatting
-  - Arena augments and items by name when static data is available
+  - Arena (`1700`/`1710`/`1750`, with `1750` shown as `Arena 3x6`): placement/team ordering, damage + team damage share, taken/healing/shielded, gold
+  - Arena augments and items by name when static data is available (raw IDs otherwise)
   - Arena skillshots hit/dodged from match challenge stats
-- Win/loss streak callouts post in `MATCH_RECAP_CHANNEL_ID` as separate messages:
+  - large batches are split across messages at player boundaries
+- Ranked win/loss streak callouts post in `MATCH_RECAP_CHANNEL_ID` as separate messages:
   - 3-4 wins: Momentum
   - 5-7 wins: Heater Alert
-  - 8+ wins: LEGENDARY
+  - 8-9 wins: LEGENDARY
+  - 10+ wins: FINAL BOSS UNLOCKED
   - 3-4 losses: Cold Streak
   - 5-7 losses: Tilt Watch
-  - 8+ losses: FULL TILT
+  - 8-9 losses: FULL TILT
+  - 10-12 losses: UNINSTALL PROTOCOL
+  - 13+ losses: BIOHAZARD IN THE LOBBY
+  - streaks are counted over the last 20 matches, ranked queues only (remakes ignored)
   - TTS is enabled by default and can be toggled with `!tts on|off|status`
 - Rank alerts post in `EVENTS_CHANNEL_ID`:
   - rank up: congratulatory message
   - rank down: flame message
   - first-seen unranked -> ranked transitions are baseline only (no alert)
 - Daily performance badges are computed from ranked matches only.
+  - Categories: 🌾 CS, 🏰 objective damage, 💥 champion damage, ❤️ healing, 🛡️ damage taken, 🗡️ kills, ☠️ deaths, 👁️ vision.
   - Badges compare per-minute rates (not totals), blended toward the group average by games played so short hot streaks don't dominate.
   - Players need at least 2 games (daily) / 3 games (weekly) to earn badges.
   - 🔁 Grinder badge goes to whoever played the most games.
@@ -109,26 +122,29 @@ Start with:
 
 ## Background Workers
 
-All workers start with jitter to avoid bursty startup traffic and log cycle heartbeat timing.
+All workers start with jitter to avoid bursty startup traffic and log cycle heartbeat timing. `WORKER_STAGGER_SECONDS` adds an extra fixed offset per worker (rank 1x, recap 2x, backfill 3x, esports 4x).
 
-- Refresh worker (`DAILY_REFRESH_SECONDS`, default `300`)
+- Refresh worker (`max(30, DAILY_REFRESH_SECONDS)`, default `300`)
   - rebuilds daily stats
-  - updates the current-day scoreboard snapshot with throttling
+  - updates the current-day scoreboard snapshot with throttling (at most every 30s on change, forced at least every 120s and at cycle end)
   - ensures daily two-message layout exists and handles day rollover copy (today -> previous day)
-  - runs DB match-cache cleanup (`MATCH_CACHE_RETENTION_DAYS`)
+  - refreshes the weekly scoreboard message
+  - runs DB match-cache cleanup (`MATCH_CACHE_RETENTION_DAYS`) at most once per hour
 - Rank worker (`max(30, DAILY_REFRESH_SECONDS)`)
   - compares current ranked entries vs persisted `player_ranked_state`
-- Recap worker (`MATCH_RECAP_POLL_SECONDS`, default `90`)
-  - detects newly finished matches and posts recaps
+- Recap worker (`max(30, MATCH_RECAP_POLL_SECONDS)`, default `90`)
+  - detects newly finished matches (last 20 per player) and posts recaps
   - posts streak callouts as separate messages (not merged into recap batches)
-  - refreshes affected players' daily stats and forces scoreboard sync
+  - refreshes affected players' daily stats and forces daily + weekly scoreboard sync
 - Backfill worker (`max(120, DAILY_REFRESH_SECONDS * 2)`)
   - runs every cycle, paging backwards through each player's match history
   - caches up to 3 uncached older matches per player per cycle into the DB
   - uses `cache_in_memory=False` to avoid polluting in-memory cache
+  - uses a smaller Riot request budget and pauses after `429`s so live features keep priority
 - Stall watchdog (every 30s)
   - alerts in `EVENTS_CHANNEL_ID` when a worker has no successful cycle within its stale threshold, and posts a recovery message
-- Esports worker (`ESPORTS_POLL_SECONDS`, default `60`; only when `NEWS_CHANNEL_ID` is set)
+  - thresholds: refresh/rank/recap `max(90, interval * 3)`, backfill `max(300, interval * 6)` (or `BACKFILL_STALE_THRESHOLD_SECONDS`), esports `max(300, poll * 5)`
+- Esports worker (`max(30, ESPORTS_POLL_SECONDS)`, default `60`; only when `NEWS_CHANNEL_ID` is set)
   - polls the schedule for each league in `ESPORTS_LEAGUES` and diffs it against a snapshot in `bot_state`
   - first poll per league is a silent baseline (no backlog spam)
 
@@ -155,6 +171,8 @@ Slash commands:
 - `/health` - same output as `!health`; only answers in `EVENTS_CHANNEL_ID` (elsewhere it replies privately with a pointer)
 
 Run `!sync` once after deploying a new bot so slash commands appear immediately in your server.
+
+Command names are case-insensitive (`!daily` works the same as `!Daily`). `!Daily` and `!Weekly` delete the invoking message when the bot has permission to, so the scoreboard channels stay clean.
 
 Command routing:
 - `!Daily` in `DAILY_REPORT_CHANNEL_ID`
@@ -237,10 +255,13 @@ On Windows, if `python` resolves to a WindowsApps alias, run tests with the Pyth
 py -3.11 -m pytest -q
 ```
 
+Tests need no Discord, Riot, or Postgres access (`tests/conftest.py` provides dummy environment values). GitHub Actions (`.github/workflows/test.yml`) runs the suite on Python 3.11 for pushes and pull requests to `main`.
+
 ## Operations Notes
 
 - If `MAX_TODAY_MATCH_DETAILS` is high, refresh cycles can become long on heavy accounts.
-- If Riot rate-limits (`429`), client retries with backoff.
+- The Riot client throttles itself to personal-key limits (20 requests/1s, 100 requests/120s), retries timeouts and transient `5xx` with exponential backoff, and honors `Retry-After` on `429` (3 attempts per request).
+- If Riot rejects `RIOT_API_KEY` (`401` from any endpoint, or `403` confirmed by a throttled status-v4 probe), the bot posts one alert in `EVENTS_CHANNEL_ID` and a recovery message once a request succeeds again.
 - Warning when recap and daily channel IDs are equal is informational only.
 - Daily/weekly tracked message IDs are now preserved across transient Discord API fetch failures (`HTTPException`) to avoid accidental duplicate scoreboard posts.
 - `!backfill` rebuilds from `match_info_cache` only and does not call Riot APIs.

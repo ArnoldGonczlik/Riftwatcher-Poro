@@ -22,14 +22,14 @@ Riftwatcher Poro is not endorsed by Riot Games. Keep the Riot disclaimer from `R
 3. Add a bot user.
 4. Copy the bot token into `DISCORD_TOKEN`.
 5. Enable **Message Content Intent** for the bot.
-6. Invite the bot to your server with permissions to:
-   - View channels
-   - Send messages
-   - Read message history
-   - Manage messages is not required
-   - Use TTS if you want streak callouts with TTS
+6. Invite the bot with the `bot` and `applications.commands` scopes (the latter is needed for `/health`) and these permissions:
+   - View Channels
+   - Send Messages
+   - Read Message History
+   - Send TTS Messages (optional, for streak callouts with TTS)
+   - Manage Messages (optional; lets the bot delete `!Daily`/`!Weekly` command messages to keep scoreboard channels clean)
 
-Riftwatcher Poro currently uses `!commands`, so Message Content Intent is required.
+Riftwatcher Poro currently uses `!commands`, so Message Content Intent is required. The bot never pings: all outgoing mentions are suppressed.
 
 ## 2. Create Discord Channels
 
@@ -39,6 +39,7 @@ Create or choose channels for:
 - Weekly scoreboard
 - Match recaps
 - Events/admin commands
+- Esports news (optional)
 
 Enable Developer Mode in Discord, right-click each channel, and copy the channel IDs into:
 
@@ -46,6 +47,7 @@ Enable Developer Mode in Discord, right-click each channel, and copy the channel
 - `WEEKLY_REPORT_CHANNEL_ID`
 - `MATCH_RECAP_CHANNEL_ID`
 - `EVENTS_CHANNEL_ID`
+- `NEWS_CHANNEL_ID` (optional; leave empty to disable esports news)
 
 The same channel can be reused for multiple roles, but separate channels are easier to operate.
 
@@ -83,6 +85,14 @@ RIOT_PLATFORM_ROUTING=euw1
 RIOT_REGIONAL_ROUTING=europe
 ```
 
+Optional but commonly used:
+
+- `ADMIN_ROLE_ID` - role allowed to run `!Add`/`!remove`/`!backfill`/`!tts on|off` (members with Manage Server or Administrator always can).
+- `NEWS_CHANNEL_ID` + `ESPORTS_API_KEY` - enable esports news. `ESPORTS_API_KEY` is the `x-api-key` header lolesports.com sends to `esports-api.lolesports.com` (browser DevTools -> Network). Pick leagues with `ESPORTS_LEAGUES` (default `worlds`).
+- Low-resource hosts (NAS/IoT): see the commented block in `.env.example` (`STARTUP_PREFER_SNAPSHOT`, `BASELINE_MATCH_LIMIT`, `RIOT_REQUEST_YIELD_SECONDS`, `WORKER_STAGGER_SECONDS`, `ASYNCIO_THREAD_POOL_SIZE`).
+
+See `README.md` for every variable and its default.
+
 ## 5. Deploy On Railway
 
 1. Fork or clone the repository.
@@ -92,11 +102,13 @@ RIOT_REGIONAL_ROUTING=europe
 5. Ensure `DATABASE_URL` points to the Railway Postgres service.
 6. Deploy.
 
-Railway uses:
+Railway uses `railway.json` (start command `python -m src.app`, restart policy `ALWAYS`). The `Procfile` provides the same command for Procfile-based hosts:
 
 ```text
 Procfile -> worker: python -m src.app
 ```
+
+The database schema is created and migrated automatically on startup.
 
 ## 6. Run Locally
 
@@ -119,9 +131,11 @@ In the events channel:
 !health
 ```
 
-Use `!health` regularly to monitor your Riot API key status, database connection, and background worker performance.
+As a server Administrator, run `!sync` once (any channel) so the `/health` slash command shows up immediately.
 
-Add tracked players:
+Use `!health` or `/health` regularly to monitor your Riot API key status, database connection, and background worker performance.
+
+Add tracked players (requires Manage Server, Administrator, or `ADMIN_ROLE_ID`):
 
 ```text
 !Add Name#Tag
@@ -137,9 +151,9 @@ Then smoke test:
 
 ## Operations Notes
 
-- The first recap cycle for a player can baseline the latest match instead of posting old backlog.
-- Recap worker runs every `MATCH_RECAP_POLL_SECONDS` seconds, default `90`.
-- Daily refresh runs every `DAILY_REFRESH_SECONDS` seconds, default `300`.
-- If Riot returns `401`, update `RIOT_API_KEY` and redeploy.
-- If the bot posts duplicate scoreboards, check channel permissions and `OPERATIONS.md`.
-- Do not commit `.env`, bot tokens, Riot API keys, or database URLs.
+- The first recap cycle for a player baselines the latest match instead of posting old backlog. The same applies to rank alerts and the first esports poll per league.
+- Recap worker runs every `MATCH_RECAP_POLL_SECONDS` seconds (minimum 30), default `90`.
+- Daily refresh runs every `DAILY_REFRESH_SECONDS` seconds (minimum 30), default `300`.
+- If Riot rejects the key (`401`/`403`), update `RIOT_API_KEY` and redeploy (see `OPERATIONS.md`). The bot posts a recovery message in the events channel once the new key works.
+- If the bot posts duplicate scoreboards or esports updates, check channel permissions, make sure only one instance uses the database, and see `OPERATIONS.md`.
+- Do not commit `.env`, bot tokens, Riot API keys, esports API keys, or database URLs.

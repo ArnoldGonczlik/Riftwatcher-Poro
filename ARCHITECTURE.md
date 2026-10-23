@@ -7,9 +7,10 @@ Riftwatcher Poro is a Discord worker service that tracks ranked League results f
 - two daily scoreboard messages in the daily channel:
   - previous day snapshot message (top)
   - current day live scoreboard message (second)
-- one live weekly scoreboard message (Monday 06:00 -> next Monday 06:00 aggregate)
-- match recap messages
+- one live weekly scoreboard message (Monday `REPORT_DAY_START_HOUR` -> next Monday aggregate)
+- match recap messages and ranked streak callouts
 - rank change event messages
+- optional esports news (schedules, live/game/series results)
 
 ## Runtime Layers
 
@@ -20,21 +21,25 @@ Riftwatcher Poro is a Discord worker service that tracks ranked League results f
   - Discord client events
   - background worker scheduling
   - startup logging and scoreboard lifecycle
+- `src/config.py`
+  - environment loading/validation (required vars fail fast at import)
+- `src/constants.py`
+  - `!command` names
 - `src/discord_command_handlers.py`
   - command entrypoint that delegates into modular handlers
 - `src/commands/`
-  - command context, routing/channel policy, and split handlers (`ops`, `player`, `report`, `slash`)
+  - command context (`context.py`), channel policy (`routing.py`), author permissions (`permissions.py`), and split handlers (`ops`, `player`, `report`, `slash`)
   - `slash_handlers.py` handles `/health` and the admin-only `!sync` command
 - `src/discord_text.py`
-  - pure text helpers (request id formatters, recap text helpers, report signatures)
+  - pure text helpers (request ids, safe user-facing errors, health report, recap/streak/queue formatting, report signatures)
 - `src/poro_service.py`
   - service facade for report generation/cache policy
   - delegates refresh/report internals to `src/services/`
 - `src/services/`
-  - `report_builder.py`, `refresh.py`, `baselines.py`
+  - `report_builder.py` (scoreboard text, badges), `refresh.py` (daily stats refresh, cache backfill), `baselines.py` (role baselines for Gamer Score)
 - `src/riot_api.py`
   - Riot API calls (account/summoner/league/matches)
-  - retry/backoff behavior
+  - client-side rate limiting, retry/backoff behavior
   - in-memory + DB match cache integration
 - `src/discord_recap_worker.py`
   - new-match detection and recap posting
@@ -56,41 +61,49 @@ Riftwatcher Poro is a Discord worker service that tracks ranked League results f
   - schema creation/migrations (`schema.py`)
   - persistence helpers split by concern (`state.py`, `players.py`, `cache.py`, `stats.py`, `ranked_state.py`)
 - `src/report_logic.py`
-  - pure queue/window/ranking helpers
+  - pure queue/window/ranking helpers, Gamer Score and Wilson math, remake detection
 - `src/rank_logic.py`
   - rank normalization/comparison and rank-message text
+- `src/arena_static.py`
+  - Arena augment (CommunityDragon) and item (Data Dragon) display names; successful loads are cached per process, failed sources retry after 10 minutes; recaps fall back to raw IDs
 
 ## Worker Model
 
-All workers run continuously while connected, each with startup jitter and cycle heartbeat logs.
+All workers run continuously while connected, each with startup jitter and cycle heartbeat logs. Every cycle records ok/error counts and last/avg/max latency in `WORKER_STATS`, which `!health` and `/health` display. Postgres is required (`DATABASE_URL`, so `DB_ENABLED` is always true); workers are scheduled from `on_ready` and are not duplicated on reconnect.
 
 - Refresh worker
   - interval: `max(30, DAILY_REFRESH_SECONDS)`
   - rebuilds daily stats for all tracked players
-  - pushes snapshot scoreboard updates with throttling
-  - runs DB match cache cleanup on interval
+  - pushes snapshot scoreboard updates with throttling (changed content at most every 30s, forced every 120s and at cycle end)
+  - refreshes the weekly scoreboard message
+  - runs DB match cache cleanup at most once per `max(3600, DAILY_REFRESH_SECONDS)` seconds
 - Rank worker
   - interval: `max(30, DAILY_REFRESH_SECONDS)`
   - compares current ranked entries with `player_ranked_state`
   - sends rank up/down messages to `EVENTS_CHANNEL_ID`
-  - first observation is baseline only (no alert)
+  - first observation is baseline only (no alert); queues that disappear from Riot's response are removed from the baseline
 - Recap worker
   - interval: `max(30, MATCH_RECAP_POLL_SECONDS)`
-  - finds new matches using persisted per-player recap key
-  - posts recap messages in `MATCH_RECAP_CHANNEL_ID` (queue, local end time, duration, per-player line items)
-  - formats Arena (`1750`) recaps with placement/team, augments/items, and skillshot challenge stats
-  - posts win/loss streak callouts in `MATCH_RECAP_CHANNEL_ID` as separate messages (3-4: Momentum/Cold Streak, 5-7: Heater Alert/Tilt Watch, 8+: LEGENDARY/FULL TILT); deduped by `last_announced_streak::{riot_id}` token
+  - finds new matches using persisted per-player recap key (`last_announced_match_id::{riot_id}`); a player's first observation is baseline only
+  - posts recap messages in `MATCH_RECAP_CHANNEL_ID` (queue label, local end time, duration, per-player line items); remakes and matches without tracked players are skipped
+  - labels ranked queues plus common non-ranked queues (normals, Swiftplay/Quickplay, ARAM, ARAM Mayhem, Clash, rotating modes, Co-op vs AI)
+  - formats Arena (`1700`/`1710`/`1750`) recaps with placement/team, damage share, augments/items, and skillshot challenge stats
+  - packs recaps into 2000-char messages, splitting at player boundaries, 3s apart
+  - posts ranked win/loss streak callouts in `MATCH_RECAP_CHANNEL_ID` as separate messages (wins: 3-4 Momentum, 5-7 Heater Alert, 8-9 LEGENDARY, 10+ FINAL BOSS UNLOCKED; losses: 3-4 Cold Streak, 5-7 Tilt Watch, 8-9 FULL TILT, 10-12 UNINSTALL PROTOCOL, 13+ BIOHAZARD IN THE LOBBY); deduped by `last_announced_streak::{riot_id}` token
   - streak callouts use Discord TTS by default; toggle with `!tts on|off|status`
   - lookback window: 20 matches
-  - refreshes affected players' daily stats and forces scoreboard update
+  - a player's recap key only advances when all of their new matches fetched successfully (failed fetches retry next cycle)
+  - refreshes affected players' daily stats and forces daily + weekly scoreboard update
 - Backfill worker
   - interval: `max(120, DAILY_REFRESH_SECONDS * 2)`
   - runs every cycle; pages backwards through each player's match history using a persisted `backfill_offset::{riot_id}` cursor
   - caches up to 3 uncached older match payloads per player per cycle
   - stores only in DB cache for backfill fetches (`cache_in_memory=False`)
+  - Riot requests use the `backfill` tier: capped at 80 of the 100-per-120s budget and paused for `max(120s, 3 x Retry-After)` after any `429`
 - Stall watchdog
   - interval: 30s
-  - alerts in `EVENTS_CHANNEL_ID` when a worker exceeds its stale threshold (backfill threshold overridable via `BACKFILL_STALE_THRESHOLD_SECONDS`); deduped, with recovery messages
+  - alerts in `EVENTS_CHANNEL_ID` when a worker exceeds its stale threshold; deduped via `worker_stall_alert_sent::{worker}` in `bot_state`, with recovery messages
+  - thresholds: refresh/rank `max(90, max(30, DAILY_REFRESH_SECONDS) * 3)`, recap `max(90, max(30, MATCH_RECAP_POLL_SECONDS) * 3)`, backfill `max(300, backfill interval * 6)` (overridable via `BACKFILL_STALE_THRESHOLD_SECONDS`), esports `max(300, max(30, ESPORTS_POLL_SECONDS) * 5)`
 - Esports worker (only when `NEWS_CHANNEL_ID` is set)
   - interval: `max(30, ESPORTS_POLL_SECONDS)`
   - fetches `getSchedule` per league in `ESPORTS_LEAGUES` and diffs against `esports_match_snapshot` in `bot_state`
@@ -104,6 +117,9 @@ All workers run continuously while connected, each with startup jitter and cycle
   - the weekly post is tracked in `esports_weekly_schedule_posted_week` (JSON: week, message IDs, rendered text) and edited in place for the rest of the week when matchups or times change (e.g. TBD slots resolving). It has no LIVE/score markers, so results don't cause edits. If it grows, an extra message is appended; if it's deleted, tracking stops until next Monday
   - a resolved matchup reverting to TBD is treated as a stale response; schedules keep the stored team names (`names` in the snapshot)
   - stale threshold: `max(300, poll * 5)`; raises (counts as error) only when every league fetch fails
+  - league slugs resolve via `getLeagues`, falling back to built-in IDs for `worlds`, `msi`, `first_stand`
+  - a missing/rejected `ESPORTS_API_KEY` (`401`/`403`) posts one alert in `NEWS_CHANNEL_ID` (`esports_auth_alert_sent`) and a recovery notice after the first successful poll
+  - snapshot entries no longer returned by the API are dropped 7 days after their start time
 
 ## Data Flow
 
@@ -111,10 +127,11 @@ All workers run continuously while connected, each with startup jitter and cycle
    - load env/config
    - initialize DB schema
    - load tracked players
-   - construct Riot client + mood service
-   - initialize scoreboard message and schedule workers
+   - construct Riot client, `PoroService` report service, and (when enabled) the esports client
+   - on first `on_ready`: initialize daily + weekly scoreboard messages and schedule workers (reconnects reuse running workers)
 2. Command flow (`!Daily`)
-   - fetch report (snapshot/cache/live as needed)
+   - delete the invoking message (if permitted) and take the report lock (concurrent `!Daily`/`!Weekly` get a "please wait" reply)
+   - show the stored snapshot immediately, then quick-refresh the last 20 matches per player and edit in the result
    - ensure both daily tracked messages exist
    - update current-day message
    - on day rollover, copy prior day final content into previous-day message (dated header), then continue updating current-day message
@@ -137,24 +154,46 @@ All workers run continuously while connected, each with startup jitter and cycle
    - post up/down messages if rank level changed
    - persist new baseline
 
+## Gamer Score
+
+Scoreboards sort by Gamer Score (0-100), then win rate, games played, and name.
+
+- Win component: Wilson lower bound of ranked wins/losses with `z = 1.40`.
+- Performance component: weighted percentile of per-minute stats (CS, champion damage, objective damage, healing, damage taken, kills, deaths inverted, vision) against same-role baselines.
+- Weights: 65% win / 35% performance; the performance share ramps linearly over the first 8 ranked games.
+- Baselines are built from cached ranked, non-remake matches (`BASELINE_MATCH_LIMIT`), need 20+ samples per role/stat, and are shown in `!health`.
+- Without a baseline or primary role the score is pure Wilson x 100.
+
+Badges (`report_builder.py`) are separate from the score: per-minute rates shrunk toward the group rate (prior of 2 games daily, 1 weekly), minimum 2 games daily / 3 weekly, plus a Grinder badge for most games.
+
+## Riot API Client
+
+- Proactive limiter sized for personal keys: 20 requests/1s and 100 requests/120s, shared across all workers.
+- Up to 3 attempts per request: request errors and `408`/`425`/`5xx` use exponential backoff with jitter; `429` sleeps for `Retry-After`.
+- `401` from any endpoint, or `403` from account-v1/status-v4, triggers the persisted one-time key alert in `EVENTS_CHANNEL_ID`. Other `403`s are confirmed with a `lol/status/v4` probe (throttled to once per 5 minutes) so endpoint restrictions don't raise false alarms.
+- After an alert, the first successful response posts a recovery message and resets `riot_401_alert_sent` (`on_authorized` callback; in-memory fast path, one DB read per process).
+- `RIOT_REQUEST_YIELD_SECONDS` adds a pause before each request on low-resource hosts.
+
 ## Persistence Model
 
 - `tracked_players`
   - source of tracked Riot IDs and PUUID cache
 - `player_daily_stats`
-  - per cycle/day wins/losses and aggregate performance stats
-  - includes expanded fields: assists, gold, wards, objective takedowns, multi-kills, and KP numerator/denominator
+  - per cycle/day wins/losses and aggregate performance stats, keyed by `(day_date, riot_id)`
+  - includes expanded fields: assists, gold, wards, objective takedowns, multi-kills, KP numerator/denominator, and `primary_role`
 - `match_info_cache`
-  - cached Riot match payloads
+  - cached Riot match payloads (cleaned up after `MATCH_CACHE_RETENTION_DAYS`)
 - `bot_state`
   - key/value operational state:
-    - scoreboard message ids (including daily current + daily previous)
-    - daily cycle keys for rollover
-    - last seen match ids
-    - recap dedupe keys
-    - one-time Riot 401 alert flag
+    - scoreboard message ids (`last_report_*`, `last_weekly_report_*`, previous-day message + cycle keys)
+    - per-player cursors: `last_seen_match_id::`, `last_announced_match_id::`, `last_announced_streak::`, `backfill_offset::`
+    - `streak_tts_enabled`
+    - alert dedupe flags: `riot_401_alert_sent`, `worker_stall_alert_sent::{worker}`, `esports_auth_alert_sent`
+    - esports state: `esports_match_snapshot`, `esports_schedule_posted_cycle`, `esports_weekly_schedule_posted_week`
 - `player_ranked_state`
   - last known rank state per `(riot_id, queue_type)`
+
+Schema creation and additive migrations (`ADD COLUMN IF NOT EXISTS`) run on every startup in `src/db/schema.py`.
 
 ## Channels
 
@@ -173,5 +212,6 @@ Command authorization (`src/commands/permissions.py`) runs after channel routing
 - Snapshot throttling avoids unnecessary Discord edits in refresh cycles.
 - Oldest-data-first player ordering is used in full refresh cycles.
 - Daily and weekly tracked message references survive transient Discord fetch errors; message state is reset only on `NotFound`/`Forbidden`.
-- Riot `401` triggers one persisted alert flag to prevent notification spam.
+- Riot `401`/`403` key rejections trigger one persisted alert flag to prevent notification spam; the flag resets with a recovery message once requests succeed again.
 - Riot `429` retries are handled in the Riot client.
+- `ASYNCIO_THREAD_POOL_SIZE` installs a custom default executor once (not again on reconnect).
