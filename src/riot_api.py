@@ -42,6 +42,11 @@ class RiotApiClient:
     RIOT_LIMIT_LONG_COUNT = 100
     RIOT_LIMIT_LONG_WINDOW_SECONDS = 120.0
     BACKFILL_LONG_WINDOW_BUDGET = 80
+    # account-v1 and status-v4 are available to every key type, so a 403 there means the key itself
+    # was rejected (expired/invalid/blacklisted). 403s elsewhere can be endpoint access restrictions
+    # or bad paths, so they are confirmed with a throttled status-v4 probe.
+    KEY_CHECK_PATHS = ("/riot/account/v1/", "/lol/status/v4/")
+    KEY_PROBE_INTERVAL_SECONDS = 300.0
 
     def __init__(
         self,
@@ -62,6 +67,7 @@ class RiotApiClient:
         db_upsert_match_info,
         db_set_last_seen_match_id,
         on_unauthorized=None,
+        on_authorized=None,
     ):
         self.riot_api_key = riot_api_key
         self.riot_platform_routing = riot_platform_routing.strip().lower()
@@ -79,6 +85,7 @@ class RiotApiClient:
         self.db_upsert_match_info = db_upsert_match_info
         self.db_set_last_seen_match_id = db_set_last_seen_match_id
         self.on_unauthorized = on_unauthorized
+        self.on_authorized = on_authorized
         self.puuid_cache = {}
         self.summoner_id_cache = {}
         self.match_info_cache = OrderedDict()
@@ -86,6 +93,9 @@ class RiotApiClient:
         self._backfill_pause_lock = threading.Lock()
         self._request_timestamps = []
         self._rate_limit_lock = threading.Lock()
+        self._key_probe_lock = threading.Lock()
+        self._last_key_probe_at = None
+        self._last_key_probe_rejected = False
 
     def clear_match_cache(self):
         self.match_info_cache.clear()
@@ -194,8 +204,8 @@ class RiotApiClient:
                 time.sleep(sleep_seconds)
                 continue
 
-            if response.status_code == 401 and self.on_unauthorized is not None:
-                self.on_unauthorized()
+            if self.is_key_rejected(url, response.status_code) and self.on_unauthorized is not None:
+                self.on_unauthorized(response.status_code)
 
             if response.status_code == 429:
                 retry_after_header = response.headers.get("Retry-After", "1")
@@ -224,7 +234,44 @@ class RiotApiClient:
                 continue
 
             response.raise_for_status()
+            if self.on_authorized is not None:
+                try:
+                    self.on_authorized()
+                except Exception as exc:
+                    self.log(f"[riot] on_authorized callback failed: {exc}")
             return response.json()
+
+    def is_key_rejected(self, url, status_code):
+        if status_code == 401:
+            return True
+        if status_code != 403:
+            return False
+        if any(path in url for path in self.KEY_CHECK_PATHS):
+            return True
+        return self.probe_key_rejected()
+
+    def probe_key_rejected(self):
+        """Check the key against status-v4; result is reused for KEY_PROBE_INTERVAL_SECONDS."""
+        now = time.monotonic()
+        with self._key_probe_lock:
+            if (
+                self._last_key_probe_at is not None
+                and (now - self._last_key_probe_at) < self.KEY_PROBE_INTERVAL_SECONDS
+            ):
+                return self._last_key_probe_rejected
+            self._last_key_probe_at = now
+
+        url = f"https://{self.riot_platform_routing}.api.riotgames.com/lol/status/v4/platform-data"
+        try:
+            self._wait_for_rate_limit_slot(request_tier="priority")
+            response = requests.get(url, headers={"X-Riot-Token": self.riot_api_key}, timeout=(5.05, 20.05))
+            rejected = response.status_code in (401, 403)
+        except requests.RequestException as exc:
+            self.log(f"[riot] Key probe failed: {type(exc).__name__}")
+            rejected = False
+        self._last_key_probe_rejected = rejected
+        self.log(f"[riot] Key probe after 403: key {'rejected' if rejected else 'ok'}.")
+        return rejected
 
     @staticmethod
     def retry_backoff_seconds(attempt):

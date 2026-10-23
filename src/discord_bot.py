@@ -18,6 +18,7 @@ from src.esports_api import EsportsApiClient
 from src.poro_service import PoroService
 from src.riot_api import RiotApiClient
 from src.runtime.alerts import RiotAlertState, trigger_riot_key_alert as runtime_trigger_riot_key_alert
+from src.runtime.alerts import trigger_riot_key_recovered as runtime_trigger_riot_key_recovered
 from src.runtime.alerts import check_and_notify_worker_stalls as runtime_check_and_notify_worker_stalls
 from src.runtime.message_store import (
     create_message_state,
@@ -177,8 +178,21 @@ BACKGROUND_STALL_TASK = None
 BACKGROUND_ESPORTS_TASK = None
 
 
-def trigger_riot_key_alert():
+def trigger_riot_key_alert(status_code=401):
     runtime_trigger_riot_key_alert(
+        state=RIOT_ALERT_STATE,
+        client=client,
+        resolve_channel=resolve_channel,
+        events_channel_id=EVENTS_CHANNEL_ID,
+        db_get_state=db_get_state,
+        db_set_state=db_set_state,
+        log=log,
+        status_code=status_code,
+    )
+
+
+def trigger_riot_key_recovered():
+    runtime_trigger_riot_key_recovered(
         state=RIOT_ALERT_STATE,
         client=client,
         resolve_channel=resolve_channel,
@@ -206,6 +220,7 @@ riot_client = RiotApiClient(
     db_upsert_match_info=db_upsert_match_info,
     db_set_last_seen_match_id=db_set_last_seen_match_id,
     on_unauthorized=trigger_riot_key_alert,
+    on_authorized=trigger_riot_key_recovered,
 )
 
 esports_client = EsportsApiClient(api_key=cfg.ESPORTS_API_KEY, log=log) if ESPORTS_ENABLED else None

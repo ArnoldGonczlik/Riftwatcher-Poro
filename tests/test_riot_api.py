@@ -376,3 +376,101 @@ def test_fetch_recent_match_ids_refreshes_puuid_after_400(monkeypatch):
 
     assert result == ["EUW1_123", "EUW1_122"]
     assert refresh_calls == [False, True]
+
+
+def _client_with_callbacks():
+    events = {"unauthorized": [], "authorized": 0}
+    client = build_client()
+    client.on_unauthorized = events["unauthorized"].append
+    client.on_authorized = lambda: events.__setitem__("authorized", events["authorized"] + 1)
+    return client, events
+
+
+def _serve(monkeypatch, responses_by_marker, calls=None):
+    def fake_get(url, headers=None, timeout=20):
+        _ = headers, timeout
+        if calls is not None:
+            calls.append(url)
+        for marker, response in responses_by_marker.items():
+            if marker in url:
+                return response
+        raise AssertionError(f"unexpected url: {url}")
+
+    monkeypatch.setattr("src.riot_api.requests.get", fake_get)
+    monkeypatch.setattr("src.riot_api.time.sleep", lambda _secs: None)
+
+
+def test_riot_get_json_calls_on_authorized_after_success(monkeypatch):
+    client, events = _client_with_callbacks()
+    _serve(monkeypatch, {"example.test": DummyResponse(200, payload={"ok": True})})
+
+    assert client.riot_get_json("https://example.test/lol/match/v5/matches/x") == {"ok": True}
+    assert events["authorized"] == 1
+    assert events["unauthorized"] == []
+
+
+def test_riot_get_json_reports_401_from_any_endpoint(monkeypatch):
+    client, events = _client_with_callbacks()
+    _serve(monkeypatch, {"/lol/match/v5/": DummyResponse(401)})
+
+    try:
+        client.riot_get_json("https://europe.api.riotgames.com/lol/match/v5/matches/x")
+    except requests.HTTPError:
+        pass
+    else:
+        raise AssertionError("expected HTTPError")
+    assert events["unauthorized"] == [401]
+    assert events["authorized"] == 0
+
+
+def test_riot_get_json_reports_403_from_account_endpoint_without_probe(monkeypatch):
+    client, events = _client_with_callbacks()
+    calls = []
+    _serve(monkeypatch, {"/riot/account/v1/": DummyResponse(403)}, calls)
+
+    try:
+        client.riot_get_json("https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/A/B")
+    except requests.HTTPError:
+        pass
+    assert events["unauthorized"] == [403]
+    assert not any("/lol/status/v4/" in url for url in calls)
+
+
+def test_403_elsewhere_alerts_only_when_status_probe_also_rejects_key(monkeypatch):
+    client, events = _client_with_callbacks()
+    _serve(
+        monkeypatch,
+        {"/lol/league/v4/": DummyResponse(403), "/lol/status/v4/": DummyResponse(200)},
+    )
+
+    try:
+        client.riot_get_json("https://euw1.api.riotgames.com/lol/league/v4/entries/by-puuid/p")
+    except requests.HTTPError:
+        pass
+    assert events["unauthorized"] == []  # Key works; 403 was an endpoint restriction.
+
+    client._last_key_probe_at = None  # Force a fresh probe.
+    _serve(
+        monkeypatch,
+        {"/lol/league/v4/": DummyResponse(403), "/lol/status/v4/": DummyResponse(403)},
+    )
+    try:
+        client.riot_get_json("https://euw1.api.riotgames.com/lol/league/v4/entries/by-puuid/p")
+    except requests.HTTPError:
+        pass
+    assert events["unauthorized"] == [403]
+
+
+def test_key_probe_is_throttled(monkeypatch):
+    client = build_client()
+    calls = []
+    _serve(monkeypatch, {"/lol/status/v4/": DummyResponse(403)}, calls)
+
+    assert client.probe_key_rejected() is True
+    assert client.probe_key_rejected() is True  # Cached result within the interval.
+    assert sum("/lol/status/v4/" in url for url in calls) == 1
+
+    client._last_key_probe_at -= client.KEY_PROBE_INTERVAL_SECONDS
+    _serve(monkeypatch, {"/lol/status/v4/": DummyResponse(200)}, calls)
+    assert client.probe_key_rejected() is False
+    assert sum("/lol/status/v4/" in url for url in calls) == 2
