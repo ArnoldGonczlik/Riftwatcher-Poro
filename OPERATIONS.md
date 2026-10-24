@@ -117,6 +117,22 @@ If updates stop:
 3. `Unknown league slug` means a typo in `ESPORTS_LEAGUES` (valid examples: `worlds`, `msi`, `first_stand`, `lec`, `lck`).
 4. To force today's schedule to repost, delete the `esports_schedule_posted_cycle` row from `bot_state`. For the weekly schedule (reposts on the next Monday-report-day poll), delete `esports_weekly_schedule_posted_week`.
 
+## Patch Notes Troubleshooting
+
+Expected behavior (enabled unless `PATCH_NOTES_ENABLED=false`):
+- Source: the leagueoflegends.com patch-notes page (`PATCH_NOTES_LOCALE`, default `en-us`). Riot has no official patch-notes API, so this reads the site's embedded page data.
+- First check baselines silently: log `[patch] Baselined N patch articles without posting`. The current patch is never posted on first deploy.
+- Checks every `PATCH_NOTES_POLL_SECONDS` (default `21600` = 6h, minimum `3600`); failed checks retry after `min(poll, 3600)` seconds. Riot publishes notes about every 2 weeks (Tuesdays ~18:00 UTC), so a post normally lands the same day.
+- The last check time is persisted (`patch_notes_last_checked_at`), so restarts and redeploys resume the schedule instead of fetching again.
+- Each new article is posted once in `EVENTS_CHANNEL_ID` (title, date, blurb, changed champions/items, link). Posted articles are tracked in `patch_notes_seen`. Articles older than 7 days are never posted (e.g. after long downtime).
+- Mid-patch updates to an already-posted article are not re-posted.
+
+If posts stop or look wrong:
+1. Check `!health` for the `patch` worker error count; the stall watchdog alerts in `EVENTS_CHANNEL_ID` after 4 missed polls (24h by default).
+2. Logs with `PatchNotesParseError` (`no __NEXT_DATA__ payload` / `contained no patch articles`) mean leagueoflegends.com changed its page structure; `src/patch_notes_logic.py` needs updating.
+3. A post without the champion/item lines (log `[patch] Could not read article sections`) means the article page couldn't be read; the post still includes the link.
+4. To re-post the latest patch, remove its id/URL from the `patch_notes_seen` JSON in `bot_state` and delete `patch_notes_last_checked_at` (the next check then runs right after restart). Deleting `patch_notes_seen` entirely re-baselines silently instead.
+
 ## Daily Scoreboard Duplicate Message Guard
 
 Symptom:
@@ -141,6 +157,7 @@ Thresholds (no successful cycle for):
 - `recap`: `max(90, max(30, MATCH_RECAP_POLL_SECONDS) * 3)` seconds
 - `backfill`: `BACKFILL_STALE_THRESHOLD_SECONDS`, or `max(300, max(120, DAILY_REFRESH_SECONDS * 2) * 6)` when unset/0
 - `esports`: `max(300, max(30, ESPORTS_POLL_SECONDS) * 5)` seconds
+- `patch`: `PATCH_NOTES_POLL_SECONDS * 4` seconds (24h by default)
 
 Actions:
 1. Check `!health` for that worker's error count and latency.
@@ -162,7 +179,7 @@ Implication:
 
 Check in this order:
 1. `DB: ok`
-2. `Workers` line shows `<worker>: <ok>ok/<err>err (<last>ms last/<avg>ms avg/<max>ms max)` for `refresh`, `rank`, `recap`, `backfill` (and `esports` when enabled), with ok counts increasing and low errors.
+2. `Workers` line shows `<worker>: <ok>ok/<err>err (<last>ms last/<avg>ms avg/<max>ms max)` for `refresh`, `rank`, `recap`, `backfill` (plus `esports` and `patch` when enabled), with ok counts increasing and low errors. `patch` only runs every few hours, so `0ok/0err` shortly after a restart is normal.
 3. `Backfill cursors active` and `Backfill max offset` are not growing unexpectedly for long periods.
 4. `Match cache entries` and `Report cache active` are sensible for current activity.
 5. `Gamer Score baselines` shows roles/samples once built (`not yet built` right after startup is normal).

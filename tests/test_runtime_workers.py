@@ -157,3 +157,70 @@ def test_background_daily_refresher_updates_runtime_cleanup_state(monkeypatch):
     assert weekly_calls == [True]
     assert runtime_state["last_cache_cleanup_at"] > 0.0
     assert "last_cache_cleanup_at" not in report_state
+
+
+def _run_patch_loop(monkeypatch, *, last_checked, cycle_error=None, stop_after_sleeps=2):
+    class FakeClient:
+        closed = False
+
+        def is_closed(self):
+            return self.closed
+
+    client = FakeClient()
+    sleeps = []
+    cycles = []
+    worker_stats = {}
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) >= stop_after_sleeps:
+            client.closed = True
+
+    async def fake_cycle(**kwargs):
+        cycles.append(kwargs)
+        if cycle_error:
+            raise cycle_error
+
+    async def resolve_channel(_channel_id):
+        return object()
+
+    monkeypatch.setattr(runtime_workers.random, "uniform", lambda _a, _b: 0.0)
+    monkeypatch.setattr(runtime_workers.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(runtime_workers.time, "time", lambda: 10_000)
+    monkeypatch.setattr(runtime_workers, "process_patch_notes_cycle", fake_cycle)
+
+    asyncio.run(
+        runtime_workers.background_patch_notes_notifier(
+            client=client,
+            poll_seconds=21600,
+            retry_seconds=3600,
+            request_id_context=__import__("contextvars").ContextVar("request_id", default=None),
+            resolve_channel=resolve_channel,
+            events_channel_id=123,
+            patch_client=object(),
+            db_get_state=lambda _key: last_checked,
+            db_set_state=lambda _key, _value: None,
+            worker_stats=worker_stats,
+            log=lambda _msg: None,
+        )
+    )
+    return sleeps, cycles, worker_stats
+
+
+def test_patch_notes_loop_waits_for_remaining_interval_after_restart(monkeypatch):
+    # Last check 1000s ago: wait the remaining 20600s before the first fetch, then a full interval.
+    sleeps, cycles, worker_stats = _run_patch_loop(monkeypatch, last_checked="9000", stop_after_sleeps=2)
+
+    assert sleeps == [20600, 21600]
+    assert len(cycles) == 1
+    assert worker_stats["patch"]["cycles"] == 1
+
+
+def test_patch_notes_loop_checks_immediately_when_due_and_retries_sooner_on_error(monkeypatch):
+    sleeps, cycles, worker_stats = _run_patch_loop(
+        monkeypatch, last_checked=None, cycle_error=RuntimeError("site down"), stop_after_sleeps=1
+    )
+
+    assert sleeps == [3600]
+    assert len(cycles) == 1
+    assert worker_stats["patch"]["errors"] == 1

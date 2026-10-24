@@ -25,6 +25,7 @@ This backlog tracks work not yet implemented as of 2026-10-23.
 
 ### 2026-06 to 2026-10
 
+- League patch-notes announcements in `EVENTS_CHANNEL_ID` (leagueoflegends.com page data; 6h default poll, restart-aware schedule, silent first baseline).
 - Riot key alert: generic text (no hardcoded mention/host), `403` detection with status-v4 confirmation, automatic flag reset + recovery message.
 - Arena static names: failed loads are no longer cached; retried after a cooldown.
 - Recap labels for common non-ranked queues (normals, Swiftplay/Quickplay, ARAM, ARAM Mayhem, Clash, rotating modes, Co-op vs AI).

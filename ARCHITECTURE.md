@@ -11,6 +11,7 @@ Riftwatcher Poro is a Discord worker service that tracks ranked League results f
 - match recap messages and ranked streak callouts
 - rank change event messages
 - optional esports news (schedules, live/game/series results)
+- League patch-notes announcements
 
 ## Runtime Layers
 
@@ -54,6 +55,12 @@ Riftwatcher Poro is a Discord worker service that tracks ranked League results f
   - LoL Esports web API client (`getLeagues`, `getSchedule`), league slug -> ID resolution with built-in fallbacks
 - `src/esports_logic.py`
   - pure event parsing, snapshot diffing, and message formatting
+- `src/discord_patch_worker.py`
+  - patch-notes cycle: silent first baseline, new-article detection, posting, seen-state persistence
+- `src/patch_notes_api.py`
+  - leagueoflegends.com client: patch-notes tag page (article list) and article page (best-effort change list)
+- `src/patch_notes_logic.py`
+  - pure parsing of the embedded Next.js page data (`__NEXT_DATA__`) and article `<h2>`/`<h3 class="change-title">` structure, message formatting, seen-state and scheduling helpers
 - `src/runtime/`
   - shared runtime worker loops, message-store helpers, and alert helpers
 - `src/db/`
@@ -103,7 +110,7 @@ All workers run continuously while connected, each with startup jitter and cycle
 - Stall watchdog
   - interval: 30s
   - alerts in `EVENTS_CHANNEL_ID` when a worker exceeds its stale threshold; deduped via `worker_stall_alert_sent::{worker}` in `bot_state`, with recovery messages
-  - thresholds: refresh/rank `max(90, max(30, DAILY_REFRESH_SECONDS) * 3)`, recap `max(90, max(30, MATCH_RECAP_POLL_SECONDS) * 3)`, backfill `max(300, backfill interval * 6)` (overridable via `BACKFILL_STALE_THRESHOLD_SECONDS`), esports `max(300, max(30, ESPORTS_POLL_SECONDS) * 5)`
+  - thresholds: refresh/rank `max(90, max(30, DAILY_REFRESH_SECONDS) * 3)`, recap `max(90, max(30, MATCH_RECAP_POLL_SECONDS) * 3)`, backfill `max(300, backfill interval * 6)` (overridable via `BACKFILL_STALE_THRESHOLD_SECONDS`), esports `max(300, max(30, ESPORTS_POLL_SECONDS) * 5)`, patch `PATCH_NOTES_POLL_SECONDS * 4`
 - Esports worker (only when `NEWS_CHANNEL_ID` is set)
   - interval: `max(30, ESPORTS_POLL_SECONDS)`
   - fetches `getSchedule` per league in `ESPORTS_LEAGUES` and diffs against `esports_match_snapshot` in `bot_state`
@@ -120,6 +127,14 @@ All workers run continuously while connected, each with startup jitter and cycle
   - league slugs resolve via `getLeagues`, falling back to built-in IDs for `worlds`, `msi`, `first_stand`
   - a missing/rejected `ESPORTS_API_KEY` (`401`/`403`) posts one alert in `NEWS_CHANNEL_ID` (`esports_auth_alert_sent`) and a recovery notice after the first successful poll
   - snapshot entries no longer returned by the API are dropped 7 days after their start time
+- Patch notes worker (unless `PATCH_NOTES_ENABLED=false`)
+  - interval: `PATCH_NOTES_POLL_SECONDS` (default 6h, min 1h); after an error it retries after `min(poll, 3600)`
+  - sized for cheap hosting: one gzip page request (~60 KB) per check, and the CDN ignores conditional requests, so the poll interval is the cost control. Riot publishes notes about every 2 weeks (Tuesdays ~18:00 UTC)
+  - persists `patch_notes_last_checked_at`; on startup it waits out the remaining interval, so restarts/redeploys don't add requests
+  - first observation (no `patch_notes_seen`) is baseline only
+  - posts each unseen article published within the last 7 days in `EVENTS_CHANNEL_ID`, oldest first; the article page is fetched only then, for the changed champion/item names (falls back to title/blurb/link)
+  - an article counts as seen by CMS id or URL, so a change to one of them doesn't cause a repost; seen-state keeps the latest 50 keys
+  - listing fetch/parse failures and Discord send failures count as errors (stall watchdog alerts after 4 missed polls); seen-state is saved after each posted article
 
 ## Data Flow
 
@@ -127,7 +142,7 @@ All workers run continuously while connected, each with startup jitter and cycle
    - load env/config
    - initialize DB schema
    - load tracked players
-   - construct Riot client, `PoroService` report service, and (when enabled) the esports client
+   - construct Riot client, `PoroService` report service, and (when enabled) the esports and patch-notes clients
    - on first `on_ready`: initialize daily + weekly scoreboard messages and schedule workers (reconnects reuse running workers)
 2. Command flow (`!Daily`)
    - delete the invoking message (if permitted) and take the report lock (concurrent `!Daily`/`!Weekly` get a "please wait" reply)
@@ -190,6 +205,7 @@ Badges (`report_builder.py`) are separate from the score: per-minute rates shrun
     - `streak_tts_enabled`
     - alert dedupe flags: `riot_401_alert_sent`, `worker_stall_alert_sent::{worker}`, `esports_auth_alert_sent`
     - esports state: `esports_match_snapshot`, `esports_schedule_posted_cycle`, `esports_weekly_schedule_posted_week`
+    - patch-notes state: `patch_notes_seen` (JSON list of posted article ids/URLs), `patch_notes_last_checked_at` (unix seconds)
 - `player_ranked_state`
   - last known rank state per `(riot_id, queue_type)`
 
@@ -199,7 +215,7 @@ Schema creation and additive migrations (`ADD COLUMN IF NOT EXISTS`) run on ever
 
 - `DAILY_REPORT_CHANNEL_ID`: daily scoreboard + `!Daily` command
 - `WEEKLY_REPORT_CHANNEL_ID`: weekly scoreboard + `!Weekly` command
-- `EVENTS_CHANNEL_ID`: ops/admin commands (`!help`, `!health`, `/health`, `!score`, `!test`, `!riottest`, `!Add`, `!remove`, `!DebugPlayer`, `!profile`, `!backfill`, `!tts`)
+- `EVENTS_CHANNEL_ID`: ops/admin commands (`!help`, `!health`, `/health`, `!score`, `!test`, `!riottest`, `!Add`, `!remove`, `!DebugPlayer`, `!profile`, `!backfill`, `!tts`), rank alerts, and patch-notes posts
 - `MATCH_RECAP_CHANNEL_ID`: match recap posts, streak callouts, `!streak` and `!tts` commands
 - `NEWS_CHANNEL_ID` (optional): esports schedule and live/game/series updates; feature disabled when unset
 

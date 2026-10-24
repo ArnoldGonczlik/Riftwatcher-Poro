@@ -5,7 +5,7 @@
 </p>
 
 Riftwatcher Poro is a Discord bot for tracking ranked League of Legends performance for a list of tracked Riot IDs.
-It maintains daily and weekly scoreboard messages, posts match recaps, and posts rank up/down alerts.
+It maintains daily and weekly scoreboard messages, posts match recaps, posts rank up/down alerts, and announces new League patch notes.
 
 ## License
 
@@ -50,6 +50,8 @@ Start with:
 - `src/discord_backfill_worker.py` - low-priority historical cache backfill
 - `src/discord_esports_worker.py` - pro play news cycle (daily schedule, live/game/series updates)
 - `src/esports_api.py` / `src/esports_logic.py` - LoL Esports API client and pure parsing/diff/format helpers
+- `src/discord_patch_worker.py` - patch-notes cycle (new article detection and posting)
+- `src/patch_notes_api.py` / `src/patch_notes_logic.py` - leagueoflegends.com patch-notes client and pure parsing/format helpers
 - `src/runtime/` - shared runtime worker/message/alert helpers
 - `src/db/` - Postgres pool, schema, and persistence helpers
 - `src/report_logic.py` - pure ranking/window helpers
@@ -101,6 +103,12 @@ Start with:
   - rank up: congratulatory message
   - rank down: flame message
   - first-seen unranked -> ranked transitions are baseline only (no alert)
+- Patch notes post in `EVENTS_CHANNEL_ID` when Riot publishes a new League patch (on by default):
+  - title, publish date (shown in each reader's locale), Riot's short blurb, and the article link
+  - names of changed champions and items, plus other sections in the patch (e.g. ARAM: Mayhem, Arena)
+  - falls back to title/blurb/link if the article body can't be read
+  - data source: the leagueoflegends.com patch-notes page (Riot has no official patch-notes API)
+  - first check is a silent baseline, so the current patch isn't posted on deploy; mid-patch updates aren't re-posted
 - Daily performance badges are computed from ranked matches only.
   - Categories: 🌾 CS, 🏰 objective damage, 💥 champion damage, ❤️ healing, 🛡️ damage taken, 🗡️ kills, ☠️ deaths, 👁️ vision.
   - Badges compare per-minute rates (not totals), blended toward the group average by games played so short hot streaks don't dominate.
@@ -122,7 +130,7 @@ Start with:
 
 ## Background Workers
 
-All workers start with jitter to avoid bursty startup traffic and log cycle heartbeat timing. `WORKER_STAGGER_SECONDS` adds an extra fixed offset per worker (rank 1x, recap 2x, backfill 3x, esports 4x).
+All workers start with jitter to avoid bursty startup traffic and log cycle heartbeat timing. `WORKER_STAGGER_SECONDS` adds an extra fixed offset per worker (rank 1x, recap 2x, backfill 3x, esports 4x, patch 5x).
 
 - Refresh worker (`max(30, DAILY_REFRESH_SECONDS)`, default `300`)
   - rebuilds daily stats
@@ -143,10 +151,14 @@ All workers start with jitter to avoid bursty startup traffic and log cycle hear
   - uses a smaller Riot request budget and pauses after `429`s so live features keep priority
 - Stall watchdog (every 30s)
   - alerts in `EVENTS_CHANNEL_ID` when a worker has no successful cycle within its stale threshold, and posts a recovery message
-  - thresholds: refresh/rank/recap `max(90, interval * 3)`, backfill `max(300, interval * 6)` (or `BACKFILL_STALE_THRESHOLD_SECONDS`), esports `max(300, poll * 5)`
+  - thresholds: refresh/rank/recap `max(90, interval * 3)`, backfill `max(300, interval * 6)` (or `BACKFILL_STALE_THRESHOLD_SECONDS`), esports `max(300, poll * 5)`, patch `poll * 4`
 - Esports worker (`max(30, ESPORTS_POLL_SECONDS)`, default `60`; only when `NEWS_CHANNEL_ID` is set)
   - polls the schedule for each league in `ESPORTS_LEAGUES` and diffs it against a snapshot in `bot_state`
   - first poll per league is a silent baseline (no backlog spam)
+- Patch notes worker (`PATCH_NOTES_POLL_SECONDS`, default `21600` = 6h, min `3600`; on unless `PATCH_NOTES_ENABLED=false`)
+  - one gzip page request (~60 KB) per check; the article itself is only fetched when a new patch appears
+  - last check time is persisted, so restarts/redeploys don't trigger extra requests; failed checks retry after `min(poll, 1h)`
+  - Riot publishes notes about every 2 weeks (Tuesdays ~18:00 UTC), so the default posts within 6 hours
 
 ## Commands
 
@@ -235,12 +247,18 @@ Esports news, all optional:
 - `ESPORTS_SPOILER_TAGS` (`true`) - wrap scores/winners in Discord spoiler tags
 - `ESPORTS_API_KEY` (no default; required when `NEWS_CHANNEL_ID` is set) - the `x-api-key` header lolesports.com sends to `esports-api.lolesports.com`. If it is missing or rejected (`401`/`403`), the bot posts an alert in `NEWS_CHANNEL_ID`
 
+Patch notes, all optional:
+
+- `PATCH_NOTES_ENABLED` (`true`) - post new League patch notes in `EVENTS_CHANNEL_ID`
+- `PATCH_NOTES_POLL_SECONDS` (`21600`, min `3600`) - seconds between checks of the patch-notes page
+- `PATCH_NOTES_LOCALE` (`en-us`) - leagueoflegends.com locale for article language and links (e.g. `en-gb`, `de-de`)
+
 ## Data Tables
 
 - `tracked_players` - tracked Riot IDs + optional PUUID
 - `player_daily_stats` - per-day wins/losses + performance aggregates
 - `match_info_cache` - cached match payload JSON
-- `bot_state` - generic state keys (message ids, last seen ids, flags)
+- `bot_state` - generic state keys (message ids, last seen ids, flags, patch-notes seen articles)
 - `player_ranked_state` - last known rank state per player/queue
 
 ## Testing

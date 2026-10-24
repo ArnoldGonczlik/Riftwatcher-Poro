@@ -6,9 +6,11 @@ import discord
 
 from src.discord_backfill_worker import process_backfill_cycle
 from src.discord_esports_worker import process_esports_cycle
+from src.discord_patch_worker import get_last_checked_unix, process_patch_notes_cycle
 from src.discord_rank_worker import process_rank_cycle
 from src.discord_recap_worker import process_recap_cycle
 from src.discord_text import create_request_id, report_signature
+from src.patch_notes_logic import seconds_until_next_check
 
 
 def _ensure_worker_stat_entry(worker_stats, worker_name):
@@ -213,6 +215,67 @@ async def background_esports_notifier(
         elapsed = int((cycle_end - cycle_start) * 1000)
         _record_worker_cycle(worker_stats, "esports", had_error=had_error, elapsed_ms=elapsed, ended_at_mono=cycle_end)
         log(f"[esports] Cycle complete elapsed={elapsed}ms next_sleep={sleep_seconds}s")
+        await asyncio.sleep(sleep_seconds)
+
+
+async def background_patch_notes_notifier(
+    *,
+    client,
+    poll_seconds,
+    retry_seconds,
+    request_id_context,
+    resolve_channel,
+    events_channel_id,
+    patch_client,
+    db_get_state,
+    db_set_state,
+    worker_stats,
+    log,
+):
+    initial_jitter = random.uniform(0.0, 60.0)
+    if initial_jitter > 0:
+        log(f"[patch] Startup jitter sleep={initial_jitter:.1f}s")
+        await asyncio.sleep(initial_jitter)
+
+    # Resume the schedule from the persisted last check so restarts/redeploys don't re-fetch.
+    try:
+        last_checked = await get_last_checked_unix(db_get_state)
+    except Exception as exc:
+        last_checked = 0
+        log(f"[patch] Could not read last check time: {exc}")
+    wait_seconds = seconds_until_next_check(last_checked, now_unix=int(time.time()), interval_seconds=poll_seconds)
+    if wait_seconds > 0:
+        log(f"[patch] Last check was recent; next check in {wait_seconds}s.")
+        await asyncio.sleep(wait_seconds)
+
+    while not client.is_closed():
+        cycle_start = time.monotonic()
+        token = request_id_context.set(create_request_id("patch"))
+        had_error = False
+        try:
+            channel = await resolve_channel(events_channel_id)
+            if channel is None:
+                had_error = True
+                log(f"[patch] Events channel {events_channel_id} unavailable; skipping cycle.")
+            else:
+                await process_patch_notes_cycle(
+                    patch_client=patch_client,
+                    channel=channel,
+                    db_get_state=db_get_state,
+                    db_set_state=db_set_state,
+                    log=log,
+                )
+        except Exception as exc:
+            had_error = True
+            log(f"[patch] Unexpected error: {exc}")
+        finally:
+            request_id_context.reset(token)
+        cycle_end = time.monotonic()
+        elapsed = int((cycle_end - cycle_start) * 1000)
+        _record_worker_cycle(worker_stats, "patch", had_error=had_error, elapsed_ms=elapsed, ended_at_mono=cycle_end)
+        # Always sleep a full interval (shorter retry after errors) so a failure can never hot-loop.
+        sleep_seconds = retry_seconds if had_error else poll_seconds
+        log(f"[patch] Cycle complete elapsed={elapsed}ms next_sleep={sleep_seconds}s")
         await asyncio.sleep(sleep_seconds)
 
 

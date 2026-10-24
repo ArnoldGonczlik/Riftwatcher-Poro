@@ -107,3 +107,10 @@ ESPORTS_LEAGUES = tuple(
 ESPORTS_API_KEY = get_env_str("ESPORTS_API_KEY", "")
 ESPORTS_POLL_SECONDS = get_env_int("ESPORTS_POLL_SECONDS", 60)
 ESPORTS_SPOILER_TAGS = get_env_bool("ESPORTS_SPOILER_TAGS", True)
+# --- League patch notes (posted in EVENTS_CHANNEL_ID) ---
+PATCH_NOTES_ENABLED = get_env_bool("PATCH_NOTES_ENABLED", True)
+# leagueoflegends.com locale for the article language/links, e.g. en-us, en-gb, de-de.
+PATCH_NOTES_LOCALE = get_env_str("PATCH_NOTES_LOCALE", "en-us").lower()
+# Notes are published about every 2 weeks (Tuesdays ~18:00 UTC). The default 6h poll
+# (4 small requests/day) still posts the same day; values below 1 hour are raised to 1 hour.
+PATCH_NOTES_POLL_SECONDS = max(3600, get_env_int("PATCH_NOTES_POLL_SECONDS", 21600))

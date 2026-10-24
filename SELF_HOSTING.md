@@ -38,7 +38,7 @@ Create or choose channels for:
 - Daily scoreboard
 - Weekly scoreboard
 - Match recaps
-- Events/admin commands
+- Events/admin commands (also receives rank alerts and League patch notes)
 - Esports news (optional)
 
 Enable Developer Mode in Discord, right-click each channel, and copy the channel IDs into:
@@ -89,6 +89,7 @@ Optional but commonly used:
 
 - `ADMIN_ROLE_ID` - role allowed to run `!Add`/`!remove`/`!backfill`/`!tts on|off` (members with Manage Server or Administrator always can).
 - `NEWS_CHANNEL_ID` + `ESPORTS_API_KEY` - enable esports news. `ESPORTS_API_KEY` is the `x-api-key` header lolesports.com sends to `esports-api.lolesports.com` (browser DevTools -> Network). Pick leagues with `ESPORTS_LEAGUES` (default `worlds`).
+- `PATCH_NOTES_ENABLED` (default `true`), `PATCH_NOTES_POLL_SECONDS` (default `21600` = 6h), `PATCH_NOTES_LOCALE` (default `en-us`) - League patch-notes posts in `EVENTS_CHANNEL_ID`. No key needed; about 4 small page requests per day.
 - Low-resource hosts (NAS/IoT): see the commented block in `.env.example` (`STARTUP_PREFER_SNAPSHOT`, `BASELINE_MATCH_LIMIT`, `RIOT_REQUEST_YIELD_SECONDS`, `WORKER_STAGGER_SECONDS`, `ASYNCIO_THREAD_POOL_SIZE`).
 
 See `README.md` for every variable and its default.
