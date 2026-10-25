@@ -855,7 +855,7 @@ def test_process_recap_cycle_includes_lp_when_rank_worker_saw_game_first():
 
     _run_single_match_recap(channel, state, win=True)
 
-    assert "(Win) | `Gold II | +21LP → 56LP`\n" in channel.messages[0]["content"]
+    assert "(Win) | `Gold II · 35LP → 56LP (+21)`\n" in channel.messages[0]["content"]
     assert json.loads(state[lp_events_state_key("Alpha#NA1")]) == []
     assert lp_pending_state_key("Alpha#NA1") not in state
 
@@ -883,7 +883,7 @@ def test_process_recap_cycle_tracks_recap_for_later_lp_edit():
     )
 
     assert handled is True
-    assert "(Loss) | `Gold II | -18LP → 22LP`\n" in channel.sent[0].content
+    assert "(Loss) | `Gold II · 40LP → 22LP (-18)`\n" in channel.sent[0].content
 
 
 def test_process_recap_cycle_skips_lp_for_non_ranked_queue():

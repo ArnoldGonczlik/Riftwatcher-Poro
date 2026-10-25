@@ -88,7 +88,7 @@ Start with:
   - Arena augments and items by name when static data is available (raw IDs otherwise)
   - Arena skillshots hit/dodged from match challenge stats
   - large batches are split across messages at player boundaries
-  - Solo/Duo and Flex lines show rank and LP change, e.g. `Gold II | -18LP → 22LP`:
+  - Solo/Duo and Flex lines show rank and LP change, e.g. `Gold II · 40LP → 22LP (-18)`:
     - no extra Riot requests: the rank worker's existing poll supplies the before/after rank
     - if the rank worker sees the game first, LP is in the recap when it posts; otherwise the recap is edited when the next rank poll sees it (usually within `DAILY_REFRESH_SECONDS`)
     - LP is only shown when exactly one game in that queue happened between two rank polls with a matching result; otherwise (two quick games, season reset, dodges/decay) the line stays without LP
