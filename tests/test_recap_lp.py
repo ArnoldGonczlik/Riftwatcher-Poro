@@ -107,16 +107,28 @@ def test_build_lp_event_rejects_unattributable_changes():
 
 
 def test_format_lp_summary():
-    assert format_lp_summary(_event()) == "Gold II | +21LP → 56LP"
-    assert format_lp_summary(_event(won=False, delta=-18)) == "Gold II | -18LP → 56LP"
-    assert format_lp_summary(_event(won=False, delta=0)) == "Gold II | 0LP → 56LP"
+    assert format_lp_summary(_event()) == "Gold II · 35LP → 56LP (+21)"
+    assert format_lp_summary(_event(won=False, delta=-18)) == "Gold II · 74LP → 56LP (-18)"
+    assert format_lp_summary(_event(won=False, delta=0)) == "Gold II · 56LP → 56LP (0)"
     apex = dict(_event(), tier="MASTER", rank="I", league_points=120)
-    assert format_lp_summary(apex) == "Master | +21LP → 120LP"
+    assert format_lp_summary(apex) == "Master · 99LP → 120LP (+21)"
+
+
+def test_format_lp_summary_rank_transitions():
+    promotion = build_lp_event(_prev("GOLD", "I", 90, 10, 8), _cur("PLATINUM", "IV", 8, 11, 8), 500)
+    assert format_lp_summary(promotion) == "Gold I 90LP → Platinum IV 8LP (+18)"
+    demotion = build_lp_event(_prev("GOLD", "II", 5, 10, 8), _cur("GOLD", "III", 75, 10, 9), 500)
+    assert format_lp_summary(demotion) == "Gold II 5LP → Gold III 75LP (-30)"
+
+
+def test_format_lp_summary_old_events_at_division_boundaries():
+    assert format_lp_summary(dict(_event(delta=18), league_points=8)) == "Gold II · 8LP (+18)"
+    assert format_lp_summary(dict(_event(won=False, delta=-30), league_points=75)) == "Gold II · 75LP (-30)"
 
 
 def test_add_lp_to_content_only_edits_a_unique_heading():
-    updated = add_lp_to_content(RECAP, HEADING, "Gold II | +21LP → 56LP")
-    assert f"{HEADING} | `Gold II | +21LP → 56LP`\n   stats line" in updated
+    updated = add_lp_to_content(RECAP, HEADING, "Gold II · 35LP → 56LP (+21)")
+    assert f"{HEADING} | `Gold II · 35LP → 56LP (+21)`\n   stats line" in updated
     # Already edited: the bare heading line is gone, so it is not edited twice.
     assert add_lp_to_content(updated, HEADING, "x") is None
     assert add_lp_to_content(RECAP + "\n\n" + RECAP, HEADING, "x") is None
@@ -175,7 +187,7 @@ def test_recap_first_is_edited_when_event_arrives():
         )
     )
     assert handled is True
-    assert "+21LP → 56LP" in message.content
+    assert "35LP → 56LP (+21)" in message.content
     assert json.loads(state[lp_pending_state_key("Alpha#EUW")]) == []
     assert lp_events_state_key("Alpha#EUW") not in state
 
@@ -232,7 +244,7 @@ def test_missing_recap_channel_keeps_pending_and_retry_edits_later():
         )
     )
     assert edited == 1
-    assert "+21LP → 56LP" in message.content
+    assert "35LP → 56LP (+21)" in message.content
     assert json.loads(state[lp_pending_state_key("Alpha#EUW")]) == []
     assert json.loads(state[lp_events_state_key("Alpha#EUW")]) == []
 

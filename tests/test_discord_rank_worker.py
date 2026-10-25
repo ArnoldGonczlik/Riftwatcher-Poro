@@ -188,7 +188,7 @@ def test_process_rank_cycle_edits_lp_into_pending_recap(monkeypatch):
         )
     )
 
-    assert f"{heading} | `Gold II | -18LP → 22LP`\n" in recap.content
+    assert f"{heading} | `Gold II · 40LP → 22LP (-18)`\n" in recap.content
     assert json.loads(bot_state[lp_pending_state_key("Alpha#EUW")]) == []
     assert upserts == [("Alpha#EUW", "RANKED_SOLO_5X5")]
 
@@ -240,7 +240,7 @@ def test_process_rank_cycle_retries_lp_edit_after_recap_channel_was_missing(monk
     # Next poll: counters are unchanged, but the stored change is paired with the recap.
     now += 300
     run_cycle(FakeRecapChannel(recap))
-    assert f"{heading} | `Gold II | +21LP → 61LP`\n" in recap.content
+    assert f"{heading} | `Gold II · 40LP → 61LP (+21)`\n" in recap.content
     assert json.loads(bot_state[lp_pending_state_key("Alpha#EUW")]) == []
 
 

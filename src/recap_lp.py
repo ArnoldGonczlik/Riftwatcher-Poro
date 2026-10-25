@@ -88,6 +88,9 @@ def build_lp_event(previous_entry, current_entry, observed_at):
         "tier": str(current_entry.get("tier")).upper(),
         "rank": str(current_entry.get("rank") or "").upper(),
         "league_points": int(current_entry.get("leaguePoints")),
+        "previous_tier": str(previous_entry.get("tier")).upper(),
+        "previous_rank": str(previous_entry.get("rank_division") or "").upper(),
+        "previous_league_points": int(previous_entry.get("league_points")),
         "observed_at": float(observed_at),
     }
 
@@ -95,8 +98,22 @@ def build_lp_event(previous_entry, current_entry, observed_at):
 def format_lp_summary(event):
     rank = format_rank({"tier": event["tier"], "rank": event["rank"]})
     delta = int(event["delta"])
-    delta_text = f"{delta:+d}LP" if delta else "0LP"
-    return f"{rank} | {delta_text} → {int(event['league_points'])}LP"
+    delta_text = f"{delta:+d}" if delta else "0"
+    lp = int(event["league_points"])
+    previous_lp = int(event.get("previous_league_points", lp - delta))
+    previous_rank = format_rank({
+        "tier": event.get("previous_tier", event["tier"]),
+        "rank": event.get("previous_rank", event["rank"]),
+    })
+    if previous_rank != rank:
+        return f"{previous_rank} {previous_lp}LP → {rank} {lp}LP ({delta_text})"
+    # Events stored before this format change lack the old rank. Do not invent
+    # a starting LP value across a division boundary.
+    if "previous_league_points" not in event and (
+        previous_lp < 0 or (event["tier"] not in APEX_TIERS and previous_lp >= 100)
+    ):
+        return f"{rank} · {lp}LP ({delta_text})"
+    return f"{rank} · {previous_lp}LP → {lp}LP ({delta_text})"
 
 
 def add_lp_to_content(content, heading, summary):
