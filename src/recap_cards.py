@@ -1,17 +1,18 @@
 """Match recap cards (Discord Components V2): one container per match.
 
-The card wraps the same header and player text as the plain-text recap, adding a
-result-coloured accent and per-player components. Each player's text is its own
+The card uses a compact header and player text with a result-coloured accent.
+Each player's text is its own
 TextDisplay with a stable component ID, so a later LP edit targets exactly that
 player. The plain-text sections are kept alongside, so a batch can still be sent as
 text if Discord rejects the card.
 """
 
 from dataclasses import dataclass, field
+import re
 
 import discord
 
-from src.discord_text import ARENA_QUEUE_IDS
+from src.discord_text import ARENA_QUEUE_IDS, format_match_duration, format_recap_queue_name
 
 # Discord limits for a Components V2 message: 40 components in total (containers and
 # their children count), 4000 characters of text across all text displays.
@@ -25,6 +26,25 @@ ACCENT_LOSS = 0xED4245
 ACCENT_MIXED = 0x5865F2
 ACCENT_NEUTRAL = 0x949BA4
 ACCENT_ARENA = 0xF0B232
+
+
+def format_card_header(queue_id, duration, accent):
+    """Presentation only: reuse the existing accent's result, without match date/time."""
+    queue = re.sub(r"^[^A-Za-z0-9]+\s*", "", format_recap_queue_name(queue_id))
+    result = {ACCENT_WIN: "Win", ACCENT_LOSS: "Loss", ACCENT_MIXED: "Mixed results",
+              ACCENT_NEUTRAL: "No result", ACCENT_ARENA: "Placements"}[accent]
+    return f"-# {queue} · **{result}** · {format_match_duration(duration)}"
+
+
+def _format_inline_lp(text):
+    """Remove the LP code box in compact cards and emphasize the resulting total."""
+    heading, newline, rest = text.partition("\n")
+    match = re.search(r" \| `([^`]+)`$", heading)
+    if match:
+        summary = re.sub(r"(\d+LP) (\([+-]?\d+\))$",
+                         lambda m: f"**{m[1]}\u00a0{m[2]}**", match[1])
+        heading = f"{heading[:match.start()]} | {summary}"
+    return f"{heading}{newline}{rest}"
 
 
 def match_accent(queue_id, participants):
@@ -96,11 +116,13 @@ def build_card_messages(matches):
         section_lines = []
         continued = False
         for player in match.players:
+            # Keep fallback text and pending headings intact; only style the card.
+            player_display = _format_inline_lp(player.text) if match.header.startswith("-# ") else player.text
             reserve = LP_TEXT_RESERVE if player.pending else 0
             while True:
                 header = match.header if not continued else _continued_header(match.header)
                 new_components = 2 if container is not None else 3  # (separator|container+header) + text
-                new_text = len(player.text) + (0 if container is not None else len(header))
+                new_text = len(player_display) + (0 if container is not None else len(header))
                 fits = (
                     current.view.content_length() + current.reserved_text + new_text + reserve <= MAX_CARD_TEXT
                     and _component_count(current.view) + new_components <= MAX_CARD_COMPONENTS
@@ -129,11 +151,11 @@ def build_card_messages(matches):
                 next_id += 1
 
             room = MAX_CARD_TEXT - current.view.content_length() - current.reserved_text - reserve
-            text = _shorten(player.text, room)
+            text = _shorten(player_display, room)
             component_id = next_id
             next_id += 1
             container.add_item(discord.ui.TextDisplay(text, id=component_id))
-            section_lines.append(text)
+            section_lines.append(_shorten(player.text, room))
             current.reserved_text += reserve
             if player.pending:
                 current.waiting.append(
@@ -166,6 +188,11 @@ def add_lp_to_card(message, component_id, heading, summary, add_lp_to_content):
     updated = add_lp_to_content(targets[0].content, heading, summary)
     if updated is None:
         return None
+    # Old pending cards keep their old text style. New compact cards use the same
+    # LP targeting/validation callback, then apply presentation to its result.
+    parent = targets[0].parent
+    if parent and parent.children and getattr(parent.children[0], "content", "").startswith("-# "):
+        updated = _format_inline_lp(updated)
     targets[0].content = updated
     if view.content_length() > MAX_CARD_TEXT:
         return None

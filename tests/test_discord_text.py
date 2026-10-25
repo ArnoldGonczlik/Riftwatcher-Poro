@@ -157,8 +157,29 @@ def test_format_recap_player_line_uses_arena_placement():
     assert "Items Zhonya's Hourglass, Rabadon's Deathcap" in line
     assert "`\n   🛒 `Items" in line
     assert "Ã¢â‚¬Â¢" not in line
+
+
     assert "CS/min" not in line
     assert "Vision" not in line
+
+
+def test_compact_recap_matches_approved_stat_groups():
+    participant = dict(
+        win=False, championName="Malzahar", teamPosition="MIDDLE", kills=5, deaths=4, assists=4,
+        totalMinionsKilled=224, totalDamageDealtToChampions=24127, damageDealtToObjectives=5242,
+        totalDamageTaken=15133, totalHeal=1639, visionScore=8,
+    )
+    text = format_recap_player_line(
+        "NoxVain#EUW", participant, 1546, champion_display="<:Malzahar:90>", compact=True,
+    )
+    assert text == (
+        "**NoxVain** · <:Malzahar:90> Mid\n"
+        "**5/4/4** KDA · **8.7** CS/min · **8** Vision\n"
+        "Damage **24,127** · Objectives **5,242**\n"
+        "Taken **15,133** · Healing **1,639**"
+    )
+    mixed = format_recap_player_line("NoxVain#EUW", participant, 1546, compact=True, show_result=True)
+    assert mixed.splitlines()[0].endswith("· **Loss**")
 
 
 def test_format_match_duration_renders_mm_ss():

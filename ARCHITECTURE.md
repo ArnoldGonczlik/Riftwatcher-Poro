@@ -99,7 +99,7 @@ All workers run continuously while connected, each with startup jitter and cycle
 - Recap worker
   - interval: `max(30, MATCH_RECAP_POLL_SECONDS)`
   - finds new matches using persisted per-player recap key (`last_announced_match_id::{riot_id}`); a player's first observation is baseline only
-  - posts recap messages in `MATCH_RECAP_CHANNEL_ID` (queue label, local end time, duration, per-player line items); remakes and matches without tracked players are skipped
+  - posts recap messages in `MATCH_RECAP_CHANNEL_ID` (compact queue/result/duration line and per-player stat groups, without card date/time); remakes and matches without tracked players are skipped
   - labels ranked queues plus common non-ranked queues (normals, Swiftplay/Quickplay, ARAM, ARAM Mayhem, Clash, rotating modes, Co-op vs AI)
   - formats Arena (`1700`/`1710`/`1750`) recaps with placement/team, damage share, augments/items, and skillshot challenge stats
   - posts each match as a card (`src/recap_cards.py`, Discord Components V2): one container per match with the plain-text header and player lines, result-coloured accent, one text component per player; packed within 40 components / 4000 characters per message (an LP reserve is kept per pending player; oversized text is shortened, never rejected), messages 3s apart

@@ -260,6 +260,8 @@ def format_recap_player_line(
     augment_names=None,
     item_names=None,
     champion_display=None,
+    compact=False,
+    show_result=False,
 ):
     lol_name = riot_id.split("#", 1)[0]
     champion = participant.get("championName", "Unknown")
@@ -291,15 +293,24 @@ def format_recap_player_line(
             f"   \U0001FA78 `Taken {damage_taken:,}`  \u2764\uFE0F `Healing {healing:,}`  \U0001F6E1\uFE0F `Shielded {shielded:,}`\n"
             f"   \U0001FA99 `Gold {gold_earned:,}`"
         ]
+        if compact:
+            share = f" ({damage_share:.1f}%)" if damage_share is not None else ""
+            lines = [
+                f"**{lol_name}** · {champion_display} · {team_label} · **{placement_label}**",
+                f"**{kills}/{deaths}/{assists}** KDA · Gold **{gold_earned:,}**",
+                f"Damage **{player_damage:,}**{share} · Taken **{damage_taken:,}**",
+                f"Healing **{healing:,}** · Shielded **{shielded:,}**",
+            ]
         augments = get_arena_augments(participant, augment_names=augment_names)
         items = get_participant_items(participant, item_names=item_names)
         skillshots_hit, skillshots_dodged = get_arena_skillshot_stats(participant)
         if skillshots_hit or skillshots_dodged:
-            lines.append(f"   \U0001F3AF `Skillshots hit {skillshots_hit}`  \U0001F483 `Dodged {skillshots_dodged}`")
+            lines.append(f"Skillshots hit **{skillshots_hit}** · Dodged **{skillshots_dodged}**" if compact else
+                         f"   \U0001F3AF `Skillshots hit {skillshots_hit}`  \U0001F483 `Dodged {skillshots_dodged}`")
         if augments:
-            lines.append(f"   \U0001F52E `Augments {', '.join(augments)}`")
+            lines.append(f"Augments · {', '.join(augments)}" if compact else f"   \U0001F52E `Augments {', '.join(augments)}`")
         if items:
-            lines.append(f"   \U0001F6D2 `Items {', '.join(items)}`")
+            lines.append(f"Items · {', '.join(items)}" if compact else f"   \U0001F6D2 `Items {', '.join(items)}`")
         return "\n".join(lines)
 
     won = bool(participant.get("win"))
@@ -311,6 +322,14 @@ def format_recap_player_line(
     cs_per_min = cs / minutes
     objective_damage = int(participant.get("damageDealtToObjectives", 0) or 0)
     vision_score = int(participant.get("visionScore", 0) or 0)
+    if compact:
+        result = f" · **{result_label}**" if show_result else ""
+        return (
+            f"**{lol_name}** · {champion_display} {role_name}{result}\n"
+            f"**{kills}/{deaths}/{assists}** KDA · **{cs_per_min:.1f}** CS/min · **{vision_score}** Vision\n"
+            f"Damage **{player_damage:,}** · Objectives **{objective_damage:,}**\n"
+            f"Taken **{damage_taken:,}** · Healing **{healing:,}**"
+        )
     return (
         f"{result_emoji} **{lol_name}** | `{role_name}` • {champion_display} ({result_label})\n"
         f"   \u2694\uFE0F `K/D/A {kills}/{deaths}/{assists}`  \U0001F33E `CS/min {cs_per_min:.1f}`\n"

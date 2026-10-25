@@ -82,14 +82,15 @@ Start with:
   - falls back to pure Wilson when no baseline or role is available yet
   - `!score` shows the breakdown per player
 - Match recap posts in `MATCH_RECAP_CHANNEL_ID` for any queue a tracked player finishes (remakes are skipped):
-  - queue label + end time + match duration
+  - compact queue + Win/Loss + match duration line; no card date/time (Discord's message timestamp provides it)
   - ranked labels for Solo/Duo, Flex and Ranked 5s; named labels for common non-ranked queues (Normal Draft/Blind, Swiftplay, Quickplay, ARAM, ARAM Mayhem, Clash, ARAM Clash, ARURF, URF, One for All, Nexus Blitz, Co-op vs AI); other queues show `Queue <id>`
   - champion/role, W/L, K/D/A, CS/min
   - player/objective damage, damage taken, healing, vision
   - Arena (`1700`/`1710`/`1750`, with `1750` shown as `Arena 3x6`): placement/team ordering, damage + team damage share, taken/healing/shielded, gold
   - Arena augments and items by name when static data is available (raw IDs otherwise)
   - Arena skillshots hit/dodged from match challenge stats
-  - each match is a card (Discord Components V2) with the same text as before and a result-coloured edge: green all wins, red all losses, blurple mixed, gold Arena, grey unknown
+  - each match is a compact card (Discord Components V2) with a result-coloured edge: green all wins, red all losses, blurple mixed, gold Arena, grey unknown
+  - player/champion/LP on one line; bold KDA, CS/min and vision; separate Damage/Objectives and Taken/Healing rows; no win/loss emojis, with individual result labels only for mixed-result cards
   - large batches are split across messages at player boundaries (40 components / 4000 characters per message); a match that doesn't fit continues under a "(continued)" header
   - if Discord rejects a card, that batch is posted as the plain-text recap instead, so recaps are never lost
   - Solo/Duo and Flex lines show rank and LP change, e.g. `Gold II · 40LP → 22LP (-18)`:

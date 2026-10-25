@@ -122,3 +122,36 @@ def test_add_lp_to_card_refuses_unknown_component_or_changed_heading():
 
     assert cards.add_lp_to_card(sent, 999, pending["heading"], "x", add_lp_to_content) is None
     assert cards.add_lp_to_card(sent, pending["component_id"], "different heading", "x", add_lp_to_content) is None
+
+
+@pytest.mark.parametrize("accent,result", [
+    (cards.ACCENT_WIN, "Win"), (cards.ACCENT_LOSS, "Loss"),
+    (cards.ACCENT_MIXED, "Mixed results"), (cards.ACCENT_NEUTRAL, "No result"),
+])
+def test_compact_header_uses_existing_result_without_date_or_clock(accent, result):
+    assert cards.format_card_header(420, 1546, accent) == f"-# Ranked Solo/Duo · **{result}** · 25:46"
+
+
+def test_compact_card_lp_has_same_style_for_immediate_and_delayed_updates():
+    header = cards.format_card_header(420, 1546, cards.ACCENT_LOSS)
+    heading = "**Alpha** · <:Malzahar:90> Mid"
+    text = heading + "\n**5/4/4** KDA · **8.7** CS/min · **8** Vision"
+    pending = {"match_id": "EUW1_2", "heading": heading}
+    summary = "Gold II · 74LP → 56LP (-18)"
+    immediate_text = add_lp_to_content(text, heading, summary)
+    [immediate] = cards.build_card_messages([
+        cards.CardMatch(header, cards.ACCENT_LOSS, [cards.CardPlayer("Alpha#EUW", immediate_text)])
+    ])
+    [delayed] = cards.build_card_messages([
+        cards.CardMatch(header, cards.ACCENT_LOSS, [cards.CardPlayer("Alpha#EUW", text, pending)])
+    ])
+    target = delayed.waiting[0]["pending"]
+    sent = ComponentMessage(1, view=delayed.view)
+    edited = cards.add_lp_to_card(sent, target["component_id"], heading, summary, add_lp_to_content)
+    assert view_text(edited) == view_text(immediate.view)
+    assert "**56LP\u00a0(-18)**" in view_text(edited)
+    assert "`" not in view_text(edited)
+    # Plain-text fallback still has the callback's original heading and LP code box.
+    assert immediate.text_sections == [header + "\n\n" + immediate_text]
+    _within_limits(immediate)
+    _within_limits(delayed)
