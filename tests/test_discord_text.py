@@ -17,6 +17,15 @@ def _http_error(status):
     return requests.HTTPError(f"{status} Error for url: {response.url}", response=response)
 
 
+def test_arena_champion_portrait_replaces_name_without_changing_stats():
+    participant = {"championName": "Ahri", "placement": 1, "kills": 5}
+    plain = format_recap_player_line("Alpha#EUW", participant, 1800, queue_id=1700)
+    portrait = format_recap_player_line(
+        "Alpha#EUW", participant, 1800, queue_id=1700, champion_icon="<:rw_champ_103:123>"
+    )
+    assert portrait == plain.replace("**Ahri**", "<:rw_champ_103:123>")
+
+
 def test_describe_error_for_user_maps_riot_http_statuses_without_url():
     assert "check RIOT_API_KEY" in describe_error_for_user(_http_error(403))
     assert "HTTP 404" in describe_error_for_user(_http_error(404))

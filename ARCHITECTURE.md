@@ -73,6 +73,9 @@ Riftwatcher Poro is a Discord worker service that tracks ranked League results f
   - rank normalization/comparison and rank-message text
 - `src/recap_lp.py`
   - LP events from rank-worker polls, LP math/formatting, and the pending-recap/event join state
+- `src/champion_icons.py`
+  - lazy Data Dragon champion portraits uploaded as application emojis (`rw_champ_<championId>`)
+  - one service per recap worker; serialized uploads, five-minute emoji cache/backoff, daily catalog cache, ten-second lookup timeout, text fallback
 - `src/arena_static.py`
   - Arena augment (CommunityDragon) and item (Data Dragon) display names; successful loads are cached per process, failed sources retry after 10 minutes; recaps fall back to raw IDs
 
@@ -208,6 +211,7 @@ Badges (`report_builder.py`) are separate from the score: per-minute rates shrun
     - per-player cursors: `last_seen_match_id::`, `last_announced_match_id::`, `last_announced_streak::`, `backfill_offset::`
     - per-player LP joins (JSON lists, 30-minute expiry): `recap_lp_pending::` (posted recap lines awaiting LP), `recap_lp_events::` (LP changes awaiting a recap)
     - `streak_tts_enabled`
+    - `champion_icons_enabled` (default off; `!champicons on|off|status` in events or recap channel)
     - alert dedupe flags: `riot_401_alert_sent`, `worker_stall_alert_sent::{worker}`, `esports_auth_alert_sent`
     - esports state: `esports_match_snapshot`, `esports_schedule_posted_cycle`, `esports_weekly_schedule_posted_week`
     - patch-notes state: `patch_notes_seen` (JSON list of posted article ids/URLs), `patch_notes_last_checked_at` (unix seconds)
@@ -226,7 +230,7 @@ Schema creation and additive migrations (`ADD COLUMN IF NOT EXISTS`) run on ever
 
 All required channels must be set and no channel fallback chain is used. `!sync` (administrators only) works in any server channel.
 
-Command authorization (`src/commands/permissions.py`) runs after channel routing: `!Add`, `!remove`, `!backfill`, and `!tts on|off` require Manage Server/Administrator or the optional `ADMIN_ROLE_ID` role. The client is created with `AllowedMentions.none()`, so no outgoing message can ping. User-facing command errors go through `discord_text.format_user_error` (safe category + request ref); raw exception text is logged only.
+Command authorization (`src/commands/permissions.py`) runs after channel routing: `!Add`, `!remove`, `!backfill`, `!tts on|off`, and `!champicons on|off` require Manage Server/Administrator or the optional `ADMIN_ROLE_ID` role. The client is created with `AllowedMentions.none()`, so no outgoing message can ping. User-facing command errors go through `discord_text.format_user_error` (safe category + request ref); raw exception text is logged only.
 
 ## Key Operational Behaviors
 

@@ -19,6 +19,7 @@ def _participant(puuid, *, win):
         "puuid": puuid,
         "win": win,
         "championName": "Ahri",
+        "championId": 103,
         "teamPosition": "MIDDLE",
         "kills": 5,
         "deaths": 2,
@@ -798,7 +799,7 @@ class MessageReturningChannel(FakeChannel):
         return self.sent[message_id - 1]
 
 
-def _run_single_match_recap(channel, state, *, win, queue_id=420):
+def _run_single_match_recap(channel, state, *, win, queue_id=420, champion_icons=None):
     riot = FakeRiotClient()
     end_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000) - 60_000
     riot.puuid_by_riot_id = {"Alpha#NA1": "puuid-a"}
@@ -833,9 +834,42 @@ def _run_single_match_recap(channel, state, *, win, queue_id=420):
             db_upsert_daily_stats=lambda *_args, **_kwargs: None,
             edit_last_report_message=edit_last_report_message,
             log=lambda _msg: None,
+            champion_icons=champion_icons,
         )
     )
     return end_ms / 1000
+
+
+@pytest.mark.parametrize("enabled,portrait", [("1", "<:rw_champ_103:123>"), ("1", None), ("0", "<:rw_champ_103:123>"), (None, "<:rw_champ_103:123>")])
+def test_champion_portrait_setting_and_fallback(enabled, portrait):
+    from src.champion_icons import CHAMPION_ICONS_STATE_KEY
+
+    class Icons:
+        calls = []
+
+        async def get(self, champion_id):
+            self.calls.append(champion_id)
+            return portrait
+
+    icons = Icons()
+    channel = MessageReturningChannel()
+    state = {CHAMPION_ICONS_STATE_KEY: enabled}
+    end_ts = _run_single_match_recap(channel, state, win=False, champion_icons=icons)
+    heading = channel.sent[0].content.splitlines()[3]
+    if enabled == "1" and portrait:
+        assert f"{portrait} (Loss)" in heading
+        assert "Ahri" not in heading
+    else:
+        assert "**Ahri** (Loss)" in heading
+    assert icons.calls == ([103] if enabled == "1" else [])
+    # Delayed LP edits use the posted heading, even if the setting changes.
+    state[CHAMPION_ICONS_STATE_KEY] = "0"
+    asyncio.run(handle_lp_event(
+        riot_id="Alpha#NA1", event=_lp_event(won=False, delta=-18, league_points=22, observed_at=end_ts + 60),
+        recap_channel=channel, db_get_state=state.get, db_set_state=state.__setitem__,
+        log=lambda _m: None, now=end_ts + 60,
+    ))
+    assert heading + " | `Gold II · 40LP → 22LP (-18)`" in channel.sent[0].content
 
 
 def _lp_event(*, won, delta, league_points, observed_at):

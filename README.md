@@ -33,6 +33,14 @@ Start with:
 - `.env.example` - copyable environment variable template.
 - `SELF_HOSTING.md` - Discord/Riot/Postgres/Railway setup guide.
 
+## Optional champion portraits
+
+Use `!champicons on`, `!champicons off`, or `!champicons status` in the events or match recap channel. Portraits are **off by default**. Changing the setting requires Manage Server/Administrator or the configured `ADMIN_ROLE_ID`; anyone can check status. The setting is stored in Postgres and applies to new recaps across this bot instance, including Arena. Existing messages are not reformatted.
+
+When enabled, a small champion portrait replaces the champion name on the same line. The bot downloads square portraits from [Riot Data Dragon](https://developer.riotgames.com/docs/lol#data-dragon) and creates [application-owned Discord emojis](https://docs.discord.com/developers/resources/emoji#application-owned-emoji) as champions are encountered. These belong to the bot application, not the server's emoji slots, and do not require `Use External Emojis`. No new credentials, dependencies, or database migration are needed.
+
+Missing images, Discord upload failures, or full application emoji capacity fall back to champion names. Emoji lookups are cached for five minutes and the champion catalog for a day; failures back off for five minutes. The first encounter can take up to ten seconds to fetch/upload a portrait. Turning the setting off stops portrait lookups/uploads but keeps existing application emojis for reuse. To remove them, use the application's emoji settings in the Discord Developer Portal.
+
 ## Project Structure
 
 - `src/app.py` - process entrypoint

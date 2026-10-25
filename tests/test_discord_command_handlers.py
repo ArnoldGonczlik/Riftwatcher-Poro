@@ -614,6 +614,55 @@ def test_tts_command_updates_and_reports_state():
     assert any("currently `OFF`" in m.content for m in channel.sent_messages)
 
 
+def test_champicons_toggle_persists_and_status_is_open_to_members():
+    from src.champion_icons import CHAMPION_ICONS_STATE_KEY
+
+    channel = FakeChannel(channel_id=555)
+    state = {}
+    kwargs = dict(
+        **{**_base_streak_kwargs(channel), "events_channel_id": 999, "match_recap_channel_id": 555},
+        riot_client=FakeRiotClient(), db_get_state=state.get, db_set_state=state.__setitem__,
+    )
+    for command, expected in [("!champicons status", "currently `OFF`"),
+                              ("!ChampIcons ON", "now `ON`"),
+                              ("!champicons status", "currently `ON`"),
+                              ("!champicons off", "now `OFF`")]:
+        message = FakeIncomingMessage(command, channel)
+        if command.endswith("status"):
+            message.author = FakeAuthor(manage_guild=False)
+        asyncio.run(handle_incoming_message(message=message, **kwargs))
+        assert expected in channel.sent_messages[-1].content
+    assert state[CHAMPION_ICONS_STATE_KEY] == "0"
+
+
+def test_champicons_denied_to_regular_members():
+    channel = FakeChannel(channel_id=999)
+    state = {}
+    message = FakeIncomingMessage("!champicons on", channel)
+    message.author = FakeAuthor(manage_guild=False)
+    asyncio.run(handle_incoming_message(
+        message=message, riot_client=FakeRiotClient(), db_get_state=state.get,
+        db_set_state=state.__setitem__, **_base_streak_kwargs(channel),
+    ))
+    assert state == {}
+    assert "requires the **Manage Server** permission" in channel.sent_messages[-1].content
+
+
+def test_champicons_usage_and_database_requirement():
+    channel = FakeChannel(channel_id=999)
+    state = {}
+    kwargs = dict(
+        **{**_base_streak_kwargs(channel), "db_enabled": False},
+        riot_client=FakeRiotClient(), db_get_state=state.get, db_set_state=state.__setitem__,
+    )
+    for command in ("!champicons", "!champicons maybe", "!champicons on extra"):
+        asyncio.run(handle_incoming_message(message=FakeIncomingMessage(command, channel), **kwargs))
+        assert "Usage:" in channel.sent_messages[-1].content
+    asyncio.run(handle_incoming_message(message=FakeIncomingMessage("!champicons on", channel), **kwargs))
+    assert "require postgres" in channel.sent_messages[-1].content
+    assert state == {}
+
+
 def test_tts_command_allowed_in_match_recap_channel():
     channel = FakeChannel(channel_id=555)
     state = {}

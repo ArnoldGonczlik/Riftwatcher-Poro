@@ -3,6 +3,8 @@ from datetime import datetime
 
 import requests
 
+from src.champion_icons import CHAMPION_ICONS_STATE_KEY, champion_icons_enabled
+
 from src.constants import (
     ADD_COMMAND,
     BACKFILL_COMMAND,
@@ -12,6 +14,7 @@ from src.constants import (
     SCORE_COMMAND,
     TEST_COMMAND,
     TTS_COMMAND,
+    CHAMPION_ICONS_COMMAND,
 )
 from src.discord_text import (
     format_health_report,
@@ -24,6 +27,28 @@ from src.discord_text import (
 async def handle_ops_commands(ctx):
     content = ctx.content
     content_lower = ctx.content_lower
+
+    if (content_lower == CHAMPION_ICONS_COMMAND
+            or content_lower.startswith(f"{CHAMPION_ICONS_COMMAND} ")):
+        arg = content_lower[len(CHAMPION_ICONS_COMMAND):].strip()
+        if arg not in {"on", "off", "status"}:
+            await ctx.message.channel.send(f"Usage: `{CHAMPION_ICONS_COMMAND} on|off|status`")
+            return True
+        if arg == "status":
+            raw = await asyncio.to_thread(ctx.db_get_state, CHAMPION_ICONS_STATE_KEY) if ctx.db_get_state else None
+            enabled = champion_icons_enabled(raw)
+            await ctx.message.channel.send(f"Champion portraits are currently `{'ON' if enabled else 'OFF'}`.")
+            return True
+        if not ctx.db_enabled or ctx.db_set_state is None:
+            await ctx.message.channel.send("Champion portrait settings require postgres-backed mode.")
+            return True
+        await asyncio.to_thread(ctx.db_set_state, CHAMPION_ICONS_STATE_KEY, "1" if arg == "on" else "0")
+        await ctx.message.channel.send(
+            f"Champion portraits are now `{arg.upper()}` for new recaps. "
+            + ("Unavailable portraits fall back to champion names." if arg == "on" else "Champion names will be shown.")
+        )
+        ctx.log(f"[champicons] Champion portraits set to {arg.upper()}.")
+        return True
 
     if content_lower == HELP_COMMAND.casefold():
         from src.commands.routing import format_help_text
