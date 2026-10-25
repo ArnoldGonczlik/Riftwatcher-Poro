@@ -1,9 +1,14 @@
 import asyncio
+import json
+import time
 from datetime import datetime
 
 import requests
 
 from src.arena_static import load_arena_display_names
+from src.recap_rank import (
+    QUEUE_TYPES, format_recap_rank, load_rank_snapshot, rank_snapshot, recap_rank_state_key,
+)
 from src.discord_text import (
     ARENA_QUEUE_IDS,
     format_match_duration,
@@ -18,6 +23,21 @@ from src.discord_text import (
     streak_tts_enabled_state_key,
 )
 from src.report_logic import derive_primary_role, get_match_duration_seconds, get_match_end_unix_seconds, get_mode_bucket, is_remake_match
+
+
+async def _refresh_recap_rank_baseline(riot_id, previous, riot_client, db_set_state, log):
+    try:
+        entries = await riot_client.fetch_ranked_entries(riot_id)
+        current = rank_snapshot(entries, time.time())
+        # Do not consume a game that League-V4 sees before Match-V5 indexes it.
+        # With unchanged counters, refresh LP (e.g. delayed LP, dodges or decay).
+        for queue, old in (previous or {}).get("queues", {}).items():
+            new = current["queues"].get(queue)
+            if new is None or (old["wins"], old["losses"]) != (new["wins"], new["losses"]):
+                return
+        await asyncio.to_thread(db_set_state, recap_rank_state_key(riot_id), json.dumps(current))
+    except (requests.RequestException, TypeError, ValueError) as exc:
+        log(f"[recap] Could not refresh rank baseline for {riot_id}: {exc}")
 
 
 async def get_ranked_streak_info(riot_client, puuid, recent_ids, max_matches=20):
@@ -149,6 +169,7 @@ async def process_recap_cycle(
     matches_to_report = set()
     pending_latest_match_id_by_riot = {}
     pending_new_match_ids_by_riot = {}
+    previous_ranks = {}
     checked_players = 0
     players_with_recent_ids = 0
     initialized_players = 0
@@ -160,6 +181,13 @@ async def process_recap_cycle(
             puuid_by_riot_id[riot_id] = puuid
             recent_ids = await riot_client.fetch_recent_match_ids(puuid, count=20, riot_id=riot_id)
             recent_ids_by_riot_id[riot_id] = recent_ids
+            previous_ranks[riot_id] = load_rank_snapshot(
+                await asyncio.to_thread(db_get_state, recap_rank_state_key(riot_id))
+            )
+            if previous_ranks[riot_id] is None:
+                await _refresh_recap_rank_baseline(
+                    riot_id, None, riot_client, db_set_state, log
+                )
             if not recent_ids:
                 continue
 
@@ -178,6 +206,10 @@ async def process_recap_cycle(
                 pending_latest_match_id_by_riot[riot_id] = latest_match_id
                 pending_new_match_ids_by_riot[riot_id] = set(new_match_ids)
                 players_with_new_ids += 1
+            elif previous_ranks[riot_id] is not None:
+                await _refresh_recap_rank_baseline(
+                    riot_id, previous_ranks[riot_id], riot_client, db_set_state, log
+                )
         except requests.RequestException as exc:
             log(f"[recap] Failed while checking {riot_id}: {exc}")
 
@@ -228,6 +260,29 @@ async def process_recap_cycle(
     )
 
     match_entries.sort(key=lambda row: row[0])
+    rank_contexts = {}
+    ranked_counts = {}
+    for _end, _match_id, queue_id, _duration, participants in match_entries:
+        if queue_id in QUEUE_TYPES:
+            for riot_id, _participant in participants:
+                key = (riot_id, queue_id)
+                ranked_counts[key] = ranked_counts.get(key, 0) + 1
+    for riot_id in sorted({key[0] for key in ranked_counts}, key=str.casefold):
+        try:
+            entries = await riot_client.fetch_ranked_entries(riot_id)
+            current = rank_snapshot(entries, time.time())
+            confirmed = False
+            if previous_ranks.get(riot_id):
+                # A second observation reduces partial rank/counter updates. It is
+                # still an observed delta, not an authoritative per-match reward.
+                await asyncio.sleep(2)
+                entries = await riot_client.fetch_ranked_entries(riot_id)
+                confirmation = rank_snapshot(entries, time.time())
+                confirmed = current["queues"] == confirmation["queues"]
+                current = confirmation
+            rank_contexts[riot_id] = (current, confirmed)
+        except (requests.RequestException, TypeError, ValueError) as exc:
+            log(f"[recap] Rank unavailable for {riot_id}: {exc}")
     recap_sections = []
     arena_display_names = None
     for end_ts, match_id, queue_id, duration_seconds, tracked_participants in match_entries:
@@ -245,16 +300,32 @@ async def process_recap_cycle(
         item_names = (arena_display_names or {}).get("item_names", {})
         ordered_participants = sorted(tracked_participants, key=lambda row: _recap_participant_sort_key(queue_id, row))
         for index, (riot_id, participant) in enumerate(ordered_participants):
-            lines.append(
-                format_recap_player_line(
-                    riot_id,
-                    participant,
-                    duration_seconds,
-                    queue_id=queue_id,
-                    augment_names=augment_names,
-                    item_names=item_names,
-                )
+            player_line = format_recap_player_line(
+                riot_id,
+                participant,
+                duration_seconds,
+                queue_id=queue_id,
+                augment_names=augment_names,
+                item_names=item_names,
             )
+            current_rank, confirmed = rank_contexts.get(riot_id, (None, False))
+            new_ids = pending_new_match_ids_by_riot.get(riot_id, set())
+            recent_ids = recent_ids_by_riot_id.get(riot_id, [])
+            # A full lookback without the old cursor cannot prove no games were missed.
+            history_complete = (
+                match_id in new_ids and len(new_ids) < len(recent_ids)
+                and not (new_ids & failed_match_ids)
+            )
+            rank_summary = format_recap_rank(
+                previous_ranks.get(riot_id), current_rank, queue_id=queue_id,
+                end_ts=end_ts, won=bool(participant.get("win")),
+                queue_match_count=ranked_counts.get((riot_id, queue_id), 0),
+                history_complete=history_complete, confirmed=confirmed,
+            )
+            if rank_summary:
+                heading, separator, stats = player_line.partition("\n")
+                player_line = f"{heading} | `{rank_summary}`{separator}{stats}"
+            lines.append(player_line)
             if index < len(ordered_participants) - 1:
                 lines.append("")
         recap_sections.append("\n".join(lines))
@@ -262,6 +333,7 @@ async def process_recap_cycle(
 
     recap_messages = _pack_sections_into_messages(recap_sections, recap_section_separator)
 
+    pending_recap_state_updates = []
     for riot_id, latest_match_id in pending_latest_match_id_by_riot.items():
         failed_for_player = False
         for match_id in pending_new_match_ids_by_riot.get(riot_id, set()):
@@ -275,13 +347,15 @@ async def process_recap_cycle(
             )
             continue
         state_key = match_recap_state_key(riot_id)
-        await asyncio.to_thread(db_set_state, state_key, latest_match_id)
+        pending_recap_state_updates.append((state_key, latest_match_id, riot_id))
 
     affected_riot_ids = set()
     for _end_ts, _match_id, _queue_id, _duration_seconds, tracked_participants in match_entries:
         for riot_id, _participant in tracked_participants:
             affected_riot_ids.add(riot_id)
     if not affected_riot_ids:
+        for state_key, latest_match_id, _riot_id in pending_recap_state_updates:
+            await asyncio.to_thread(db_set_state, state_key, latest_match_id)
         return
 
     streak_sections = []
@@ -318,6 +392,15 @@ async def process_recap_cycle(
             f"[recap] Posted recap batch in channel {match_recap_channel_id}: "
             f"matches={len(recap_sections)} messages={len(recap_messages)}."
         )
+
+    # Save only after Discord accepts the recap. A failed send must remain retryable.
+    for state_key, latest_match_id, riot_id in pending_recap_state_updates:
+        current_rank, _confirmed = rank_contexts.get(riot_id, (None, False))
+        if current_rank is not None:
+            await asyncio.to_thread(
+                db_set_state, recap_rank_state_key(riot_id), json.dumps(current_rank)
+            )
+        await asyncio.to_thread(db_set_state, state_key, latest_match_id)
 
     streak_tts_enabled = True
     try:

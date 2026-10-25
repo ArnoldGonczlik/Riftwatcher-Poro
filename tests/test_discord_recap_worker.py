@@ -1,10 +1,12 @@
 import asyncio
+import json
 from datetime import datetime, timezone
 
 import pytest
 import requests
 
 from src.discord_recap_worker import process_recap_cycle
+from src.recap_rank import rank_snapshot, recap_rank_state_key
 
 
 def _state_key(riot_id):
@@ -45,6 +47,10 @@ class FakeRiotClient:
         self.match_info_by_id = {}
         self.mode_records_by_riot_id = {}
         self.today_mode_calls = []
+        self.ranked_entries = []
+
+    async def fetch_ranked_entries(self, riot_id):
+        return self.ranked_entries
 
     async def fetch_puuid(self, riot_id):
         return self.puuid_by_riot_id[riot_id]
@@ -768,4 +774,158 @@ def test_pack_sections_into_messages_graceful_split():
     assert len(messages) == 2
     assert messages[0] == "\n\n".join(p[:4])
     assert messages[1] == "\n\n".join(p[4:])
+
+
+@pytest.fixture
+def ranked_recap(monkeypatch):
+    async def no_sleep(_seconds):
+        pass
+
+    monkeypatch.setattr("src.discord_recap_worker.asyncio.sleep", no_sleep)
+    riot = FakeRiotClient()
+    riot.puuid_by_riot_id = {"Alpha#NA1": "a"}
+    riot.recent_ids_by_puuid = {"a": ["m2", "m1"]}
+    riot.match_info_by_id = {
+        "m2": {"info": dict(queueId=420, gameDuration=1800, gameEndTimestamp=200000,
+                             participants=[_participant("a", win=True)])},
+        "m1": {"info": dict(queueId=420, gameDuration=1800, gameEndTimestamp=50000,
+                             participants=[_participant("a", win=False)])},
+    }
+    old = dict(queueType="RANKED_SOLO_5x5", tier="GOLD", rank="II",
+               leaguePoints=50, wins=10, losses=5)
+    riot.ranked_entries = [dict(old, leaguePoints=74, wins=11)]
+    key = recap_rank_state_key("Alpha#NA1")
+    state = {_state_key("Alpha#NA1"): "m1", key: json.dumps(rank_snapshot([old], 100))}
+    channel = FakeChannel()
+
+    def run():
+        asyncio.run(process_recap_cycle(
+            friends=["Alpha#NA1"], riot_client=riot, poro_service=FakePoroService(),
+            report_timezone=timezone.utc, match_recap_channel_id=123, channel=channel,
+            db_enabled=False, db_get_state=state.get, db_set_state=state.__setitem__,
+            db_upsert_daily_stats=lambda *args: None,
+            edit_last_report_message=lambda **kwargs: no_sleep(0), log=lambda message: None,
+        ))
+
+    return riot, state, channel, key, run
+
+
+def test_recap_includes_lp_and_persists_baseline_without_reposting(ranked_recap):
+    _riot, state, channel, key, run = ranked_recap
+    run()
+    assert "+24LP" in channel.messages[0]["content"]
+    heading = next(line for line in channel.messages[0]["content"].splitlines() if "**Ahri**" in line)
+    assert "(Win) | `Gold II | +24LP \u2192 74LP`" in heading
+    assert channel.messages[0]["content"].count("\n") == 6
+    assert "74LP" in channel.messages[0]["content"]
+    assert json.loads(state[key])["queues"]["RANKED_SOLO_5X5"]["wins"] == 11
+    run()
+    assert len(channel.messages) == 1
+
+
+def test_first_rank_observation_shows_na(ranked_recap):
+    _riot, state, channel, key, run = ranked_recap
+    del state[key]
+    run()
+    assert "N/A" in channel.messages[0]["content"]
+    assert "74LP" in channel.messages[0]["content"]
+
+
+def test_send_failure_keeps_lp_baseline_and_cursor_for_retry(ranked_recap):
+    _riot, state, channel, _key, run = ranked_recap
+    original = dict(state)
+    send = channel.send
+
+    async def fail(*args, **kwargs):
+        raise RuntimeError("Discord unavailable")
+
+    channel.send = fail
+    with pytest.raises(RuntimeError, match="Discord unavailable"):
+        run()
+    assert all(state[key] == value for key, value in original.items())
+    channel.send = send
+    run()
+    assert "+24LP" in channel.messages[0]["content"]
+
+
+def test_rank_api_failure_does_not_block_recap(ranked_recap):
+    riot, state, channel, key, run = ranked_recap
+    original = state[key]
+
+    async def fail(_riot_id):
+        raise requests.RequestException("rate limited")
+
+    riot.fetch_ranked_entries = fail
+    run()
+    assert "Rank N/A LP N/A" in channel.messages[0]["content"]
+    assert state[key] == original
+    assert state[_state_key("Alpha#NA1")] == "m2"
+
+
+def test_changing_rank_response_does_not_claim_match_lp(ranked_recap):
+    riot, _state, channel, _key, run = ranked_recap
+    calls = 0
+
+    async def changing(_riot_id):
+        nonlocal calls
+        calls += 1
+        return [dict(riot.ranked_entries[0], leaguePoints=50 if calls == 1 else 74)]
+
+    riot.fetch_ranked_entries = changing
+    run()
+    assert "74LP" in channel.messages[0]["content"]
+    assert "N/A" in channel.messages[0]["content"]
+
+
+def test_rank_ahead_of_match_history_preserves_previous_baseline(ranked_recap):
+    riot, state, channel, key, run = ranked_recap
+    original = state[key]
+    riot.recent_ids_by_puuid["a"] = ["m1"]
+    run()
+    assert state[key] == original
+    assert channel.messages == []
+    riot.recent_ids_by_puuid["a"] = ["m2", "m1"]
+    run()
+    assert "+24LP" in channel.messages[0]["content"]
+
+
+def test_idle_poll_refreshes_delayed_lp_with_unchanged_counters(ranked_recap):
+    riot, state, _channel, key, run = ranked_recap
+    riot.recent_ids_by_puuid["a"] = ["m1"]
+    riot.ranked_entries[0]["wins"] = 10
+    run()
+    assert json.loads(state[key])["queues"]["RANKED_SOLO_5X5"]["leaguePoints"] == 74
+
+
+def test_missed_games_do_not_get_individual_lp_deltas(ranked_recap):
+    riot, _state, channel, _key, run = ranked_recap
+    riot.recent_ids_by_puuid["a"] = ["m3", "m2", "m1"]
+    riot.match_info_by_id["m3"] = {"info": dict(
+        queueId=420, gameDuration=1800, gameEndTimestamp=300000,
+        participants=[_participant("a", win=True)],
+    )}
+    riot.ranked_entries[0].update(wins=12, leaguePoints=98)
+    run()
+    recap = channel.messages[0]["content"]
+    assert recap.count("New Match Recap") == 2
+    assert recap.count("N/A") == 2
+    assert "+48LP" not in recap
+
+
+def test_first_na_then_next_game_uses_saved_baseline(ranked_recap, monkeypatch):
+    riot, state, channel, key, run = ranked_recap
+    del state[key]
+    monkeypatch.setattr("src.discord_recap_worker.time.time", lambda: 210)
+    run()
+    assert "N/A" in channel.messages[0]["content"]
+    riot.recent_ids_by_puuid["a"] = ["m3", "m2", "m1"]
+    riot.match_info_by_id["m3"] = {"info": dict(
+        queueId=420, gameDuration=1800, gameEndTimestamp=300000,
+        participants=[_participant("a", win=False)],
+    )}
+    riot.ranked_entries[0].update(losses=6, leaguePoints=56)
+    monkeypatch.setattr("src.discord_recap_worker.time.time", lambda: 310)
+    run()
+    assert "-18LP" in channel.messages[1]["content"]
+    assert "56LP" in channel.messages[1]["content"]
 

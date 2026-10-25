@@ -71,6 +71,9 @@ Riftwatcher Poro is a Discord worker service that tracks ranked League results f
   - pure queue/window/ranking helpers, Gamer Score and Wilson math, remake detection
 - `src/rank_logic.py`
   - rank normalization/comparison and rank-message text
+- `src/recap_rank.py`
+  - validated recap rank snapshots and conservative per-match LP attribution
+  - separate Solo/Duo and Flex baselines under `recap_rank_snapshot::{riot_id}` in `bot_state`
 - `src/arena_static.py`
   - Arena augment (CommunityDragon) and item (Data Dragon) display names; successful loads are cached per process, failed sources retry after 10 minutes; recaps fall back to raw IDs
 
@@ -99,7 +102,9 @@ All workers run continuously while connected, each with startup jitter and cycle
   - posts ranked win/loss streak callouts in `MATCH_RECAP_CHANNEL_ID` as separate messages (wins: 3-4 Momentum, 5-7 Heater Alert, 8-9 LEGENDARY, 10+ FINAL BOSS UNLOCKED; losses: 3-4 Cold Streak, 5-7 Tilt Watch, 8-9 FULL TILT, 10-12 UNINSTALL PROTOCOL, 13+ BIOHAZARD IN THE LOBBY); deduped by `last_announced_streak::{riot_id}` token
   - streak callouts use Discord TTS by default; toggle with `!tts on|off|status`
   - lookback window: 20 matches
-  - a player's recap key only advances when all of their new matches fetched successfully (failed fetches retry next cycle)
+  - a player's recap key and LP baseline only advance after recap sends succeed and all of their new matches fetched successfully (failed fetches retry next cycle)
+  - current rank/LP is displayed for Solo/Duo and Flex; a single-game observed LP delta requires a prior snapshot before the match ended, complete history, matching win/loss increments, and two equal rank observations two seconds apart
+  - ambiguous changes display `N/A`; idle rank snapshots refresh only when prior queue counters are unchanged, avoiding consumption of results that precede match-history indexing
   - refreshes affected players' daily stats and forces daily + weekly scoreboard update
 - Backfill worker
   - interval: `max(120, DAILY_REFRESH_SECONDS * 2)`

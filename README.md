@@ -33,6 +33,20 @@ Start with:
 - `.env.example` - copyable environment variable template.
 - `SELF_HOSTING.md` - Discord/Riot/Postgres/Railway setup guide.
 
+## LP in match recaps
+
+Solo/Duo and Flex recaps include current rank, LP, and the observed change when one game can be attributed to a saved snapshot:
+
+`Malzahar (Loss) | Gold II | -18LP → 56LP`
+
+First observations, missing/stale rank data, counter resets, incomplete history, and multiple games in the same queue show `N/A` for the change, for example `Gold II | N/A → 56LP`. Rank and LP appear next to the champion and result on the same line, with the change before the resulting total. Rank is the latest fetched rank, including in older recaps; it is not a historical rank lookup.
+
+LP changes are inferred from League-V4 snapshots; Match-V5 does not provide a per-match LP reward. Solo/Duo and Flex have separate baselines in `bot_state`, independent of the rank-up/down notifier. Division changes use 100 LP per division; Master/Grandmaster/Challenger share an LP ladder. The number is observed net rank progress and can include penalties or other adjustments, so it is not a guaranteed match reward. Zero or result-inconsistent changes show `N/A` because the rank response may still be updating.
+
+The recap worker establishes a baseline on first observation and refreshes it during idle polls when win/loss counters are unchanged. It retains the baseline if ranked results arrive before match history. For ranked recaps with an existing baseline, it checks rank twice, two seconds apart, before attributing a change. This reduces partial-update errors but cannot guarantee Riot's data has settled. Rank failures do not block match recaps.
+
+No new settings or database migration are required. This adds one ranked-entry request per idle player per recap poll and up to two per player in a ranked recap batch, plus initial baseline lookups. API retries/fallbacks can add requests. Successful sends advance the recap cursor and LP baseline; a failed send leaves them available for retry. A crash after Discord accepts a message but before state is saved can still cause duplicate delivery.
+
 ## Project Structure
 
 - `src/app.py` - process entrypoint
@@ -82,6 +96,7 @@ Start with:
   - queue label + end time + match duration
   - ranked labels for Solo/Duo, Flex and Ranked 5s; named labels for common non-ranked queues (Normal Draft/Blind, Swiftplay, Quickplay, ARAM, ARAM Mayhem, Clash, ARAM Clash, ARURF, URF, One for All, Nexus Blitz, Co-op vs AI); other queues show `Queue <id>`
   - champion/role, W/L, K/D/A, CS/min
+  - current rank, current LP, and observed LP change for Solo/Duo and Flex (or `N/A` when attribution is unavailable)
   - player/objective damage, damage taken, healing, vision
   - Arena (`1700`/`1710`/`1750`, with `1750` shown as `Arena 3x6`): placement/team ordering, damage + team damage share, taken/healing/shielded, gold
   - Arena augments and items by name when static data is available (raw IDs otherwise)
