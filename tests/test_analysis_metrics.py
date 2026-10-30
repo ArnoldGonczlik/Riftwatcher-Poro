@@ -32,6 +32,14 @@ def test_profile_explains_main_role_and_pool_without_mixing_other_roles():
     assert "Sona" not in profile
 
 
+def test_tied_role_counts_follow_existing_analysis_main_role_choice():
+    from src.player_analysis import _main_role
+
+    games = [match(0, team_position="UTILITY"), match(1, team_position="MIDDLE")]
+    assert _main_role(games)[0] == "UTILITY"
+    assert "How you play · Support · 1/2 games" in playstyle_summary(games)
+
+
 def test_rates_weight_by_duration_and_missing_values_show_coverage():
     games = [match(0, cs=60, duration_seconds=600), match(1, cs=240, duration_seconds=1200),
              match(2, cs=None, kill_participation=None, lane_cs_10=None)]

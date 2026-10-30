@@ -93,7 +93,8 @@ def playstyle_summary(games: list) -> str:
     if not games:
         return ""
     roles = Counter(game.get("team_position") for game in games if game.get("team_position") in ALL_ROLES)
-    role = min(roles, key=lambda key: (-roles[key], key)) if roles else None
+    # Match the existing analysis rules: ties keep the first role in game order.
+    role = max(roles, key=roles.get) if roles else None
     selected = [game for game in games if game.get("team_position") == role] if role else games
     champions = Counter(game.get("champion_name") for game in selected if game.get("champion_name"))
     picks = []
