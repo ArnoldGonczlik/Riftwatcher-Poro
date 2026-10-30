@@ -329,3 +329,5 @@ If you find Riftwatcher Poro useful and would like to support its development, y
 - `ARCHITECTURE.md` for design principles and module/runtime structure.
 - `OPERATIONS.md` for incident response and runbook steps.
 - `IMPROVEMENT_BACKLOG.md` for prioritized future work.
+
+The Hall of Fame groups enemy jungle minions and buffs stolen under Farm and map, and career objective steals under Streaks and career. Dragon and Baron takedown records are omitted; there is no separate Jungle section.

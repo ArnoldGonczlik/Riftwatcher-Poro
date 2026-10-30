@@ -240,7 +240,7 @@ def test_group_card_sections():
     assert sections[-1].endswith("`!records Name` for personal bests")
 
 
-def test_group_card_jungle_section():
+def test_counter_jungle_records_in_farm_and_objective_steals_in_career():
     rows = [
         row("ÇÛΜÌŃΜÝÄŠŠ#EUW", days=1, camps=80, buffs=2, dragons=6, steals=3, champion="Vi"),
         row("ÇÛΜÌŃΜÝÄŠŠ#EUW", days=2, steals=2),
@@ -248,27 +248,29 @@ def test_group_card_jungle_section():
         row("Gizhmo#EUW", days=4, barons=1, champion="Kaisa"),
     ]
     sections = format_group_sections(build_record_book(rows))
-    jungle = next(section for section in sections if section.startswith("**Jungle**"))
-    assert jungle == (
-        "**Jungle**\n"
-        "**80** enemy jungle minions · ÇÛΜÌŃΜÝÄŠŠ · Vi · Jan 2025\n"
-        "**15** buffs stolen · JonastCvuHU · Karthus · Jan 2025\n"
-        "**6** dragons · ÇÛΜÌŃΜÝÄŠŠ · Vi · Jan 2025\n"
-        "**1** baron · Gizhmo · Kaisa · Jan 2025\n"
-        "**5** objective steals (career) · ÇÛΜÌŃΜÝÄŠŠ · group total 6"
-    )
-    # Jungle sits between Farm and map and Pain; it stays off personal cards.
-    order = [section.split("\n", 1)[0] for section in sections]
-    assert order.index("**Farm and map**") < order.index("**Jungle**") < order.index("**Pain**")
+    farm = next(section for section in sections if section.startswith("**Farm and map**"))
+    career = next(section for section in sections if section.startswith("**Streaks and career**"))
+    assert "**80** enemy jungle minions" in farm and "**15** buffs stolen" in farm
+    assert "**5** objective steals (career)" in career and "group total 6" in career
+    text = "\n\n".join(sections)
+    assert "**Jungle**" not in text and "dragons" not in text and "baron" not in text
+    assert "objective steals" not in farm
     personal = "\n\n".join(format_personal_sections(build_record_book(rows), "JonastCvuHU#UNC"))
     assert "buffs stolen" not in personal
 
 
 def test_teammates_tied_in_one_game_resolve_by_name():
-    nox = row("NoxVain#EUW", barons=4, champion="Amumu")
-    giz = dict(row("gizhmo#EUW", barons=4, champion="Kaisa"), match_id=nox["match_id"], game_end_at=nox["game_end_at"])
+    nox = row("NoxVain#EUW", buffs=4, champion="Amumu")
+    giz = dict(row("gizhmo#EUW", buffs=4, champion="Kaisa"), match_id=nox["match_id"], game_end_at=nox["game_end_at"])
     for rows in ([nox, giz], [giz, nox]):
-        assert build_record_book(rows).record("barons").riot_id == "gizhmo#EUW"
+        assert build_record_book(rows).record("buffs_stolen").riot_id == "gizhmo#EUW"
+
+
+def test_dragons_and_barons_no_longer_produce_record_announcements():
+    book = build_record_book(history(dragons=1, barons=1))
+    new = row(days=400, dragons=99, barons=99)
+    assert detect_record_breaks(book, [(new["match_id"], [new])]) == {}
+    assert "dragons" not in CATEGORIES_BY_KEY and "barons" not in CATEGORIES_BY_KEY
 
 
 def test_group_card_with_no_games():
@@ -401,7 +403,7 @@ def test_records_command_sends_group_card():
     channel = run_command("!records", logs=logs)
     assert channel.sent[0].startswith("🏆 **Hall of Fame**")
     assert "**30** kills · Tamarin" in channel.sent[0]
-    assert logs[-1] == "[records] Sent group records: games=2 matches=2."
+    assert logs[-1] == "[records] Sent group records: games=2 matches=2 layout=farm-and-career."
 
 
 def test_records_command_sends_personal_bests():
