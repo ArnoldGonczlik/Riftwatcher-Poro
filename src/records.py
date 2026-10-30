@@ -105,8 +105,6 @@ CATEGORIES = (
     RecordCategory(
         "buffs_stolen", "buffs stolen", SECTION_JUNGLE, _column("buffs_stolen"), personal="jungle", singular="buff stolen"
     ),
-    RecordCategory("dragons", "dragons", SECTION_JUNGLE, _column("dragon_takedowns"), personal="jungle", singular="dragon"),
-    RecordCategory("barons", "barons", SECTION_JUNGLE, _column("baron_takedowns"), personal="jungle", singular="baron"),
     RecordCategory("deaths", "deaths", SECTION_PAIN, _column("deaths"), personal="worst", singular="death"),
     RecordCategory("damage_taken", "damage taken", SECTION_PAIN, _column("damage_taken")),
     RecordCategory(

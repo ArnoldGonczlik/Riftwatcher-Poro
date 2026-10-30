@@ -1,8 +1,8 @@
 """`!analyze`: a selected window of one player's ranked games turned into strengths and tips.
 
 Pure logic over `player_match_stats` rows (see src/match_stats.py); no Discord, Riot or
-DB access. Every finding is guarded: it needs a minimum number of games on each side
-of a comparison and a clear gap, so small or noisy samples never become advice.
+DB access. Findings need minimum samples and practical gaps; metric trends also
+apply a noise guard. These heuristics describe stored games, not causes of losses.
 Candidates are ranked by gap size weighted by sample size, and the card shows at most
 three strengths and three things to work on, each with its record.
 
@@ -88,15 +88,17 @@ def analysis_start(now, months=DEFAULT_MONTHS):
     return now.replace(year=year, month=month, day=min(now.day, calendar.monthrange(year, month)[1]))
 
 
-def parse_analyze_args(raw):
-    """Optional month count and queue suffix, in either order."""
-    words = raw.split()
+def _parse_analyze_suffixes(words):
     queue, months = DEFAULT_QUEUE, DEFAULT_MONTHS
     seen = set()
     while words:
         token = words[-1].casefold()
-        kind = "queue" if token in QUEUES else "months" if token.replace("-", "", 1).replace(".", "", 1).isdigit() else None
-        if kind is None:
+        numeric = token.lstrip("+-").replace(".", "", 1).isdigit()
+        if token in QUEUES:
+            kind = "queue"
+        elif numeric:
+            kind = "months"
+        else:
             break
         if kind in seen:
             raise ValueError("Use one month count and one queue: `!analyze Name#Tag 3 flex`.")
@@ -105,10 +107,34 @@ def parse_analyze_args(raw):
         if kind == "queue":
             queue = token
         else:
-            if not token.isdigit() or not 1 <= int(token) <= MAX_ANALYSIS_MONTHS:
+            if not token.isdecimal() or not 1 <= int(token) <= MAX_ANALYSIS_MONTHS:
                 raise ValueError("Choose a whole number of months from 1 to 12.")
             months = int(token)
     return " ".join(words), queue, months
+
+
+def parse_analyze_args(raw: str, *, tracked=()):
+    """Optional months/queue suffix; a tracked name takes precedence over options.
+
+    Longest matching name first preserves names such as "Player 2", including
+    when followed by another number. Full Riot IDs disambiguate shared names.
+    """
+    words = raw.split()
+    for suffix_length in range(min(2, len(words) - 1) + 1):
+        prefix = " ".join(words[:-suffix_length] if suffix_length else words)
+        wanted = prefix.casefold()
+        matches_name = any(
+            wanted == name.casefold()
+            or ("#" not in wanted and wanted == name.split("#", 1)[0].casefold())
+            for name, _puuid in tracked
+        )
+        if not matches_name:
+            continue
+        suffix = words[-suffix_length:] if suffix_length else []
+        remainder, queue, months = _parse_analyze_suffixes(suffix)
+        if not remainder:
+            return prefix, queue, months
+    return _parse_analyze_suffixes(words)
 
 
 def resolve_tracked_player(query, tracked):
@@ -353,15 +379,20 @@ def _top(findings):
     return [f.text for f in sorted(findings, key=lambda f: f.score, reverse=True)[:MAX_FINDINGS]]
 
 
-def _rate(game, key):
+def _rate(game, key, per_minutes=1):
     minutes = (game.get("duration_seconds") or 0) / 60
     value = game.get(key)
-    return value / minutes if value is not None and minutes > 0 else None
+    return per_minutes * value / minutes if value is not None and minutes > 0 else None
 
 
 def _objectives(game):
     values = [game.get(key) for key in ("dragon_takedowns", "baron_takedowns", "herald_takedowns")]
     return sum(values) if all(value is not None for value in values) else None
+
+
+def _lane_cs_at_ten(game):
+    # Early surrenders can carry a partial first-ten-minutes counter.
+    return game.get("lane_cs_10") if (game.get("duration_seconds") or 0) >= 600 else None
 
 
 def _metric_findings(games):
@@ -379,11 +410,11 @@ def _metric_findings(games):
     # label, measurement, minimum gap, higher is better, roles, action
     metrics = (
         ("CS/min", lambda g: _rate(g, "cs"), 0.7, True, {"TOP", "MIDDLE", "BOTTOM", "JUNGLE"}, "Review missed farm and rotations"),
-        ("CS at 10 min", lambda g: g.get("lane_cs_10"), 8, True, {"TOP", "MIDDLE", "BOTTOM"}, "Review early last-hitting and recalls"),
-        ("deaths/10 min", lambda g: None if _rate(g, "deaths") is None else 10 * _rate(g, "deaths"), 0.5, False, set(ROLE_NAMES), "Review deaths before objectives"),
+        ("lane CS at 10 min", _lane_cs_at_ten, 8, True, {"TOP", "MIDDLE", "BOTTOM"}, "Review early last-hitting and recalls"),
+        ("deaths/10 min", lambda g: _rate(g, "deaths", per_minutes=10), 0.5, False, set(ROLE_NAMES), "Review deaths before objectives"),
         ("kill participation %", lambda g: None if g.get("kill_participation") is None else 100 * g["kill_participation"], 10, True, set(ROLE_NAMES), "Review missed team fights and rotations"),
         ("vision/min", lambda g: _rate(g, "vision_score"), 0.2, True, set(ROLE_NAMES), "Review vision setup before objectives"),
-        ("wards cleared/10 min", lambda g: None if _rate(g, "wards_killed") is None else 10 * _rate(g, "wards_killed"), 0.5, True, {"UTILITY", "JUNGLE"}, "Review sweeper use and control wards"),
+        ("wards cleared/10 min", lambda g: _rate(g, "wards_killed", per_minutes=10), 0.5, True, {"UTILITY", "JUNGLE"}, "Review sweeper use and control wards"),
         ("epic objective takedowns/game", _objectives, 0.5, True, {"JUNGLE"}, "Review objective timing and team setup"),
     )
     for (champion, role), group in sorted(groups.items()):
@@ -489,7 +520,8 @@ def format_analysis_sections(analysis):
     period = f"last {analysis.months} month{'s' if analysis.months != 1 else ''}"
     summary = _recent_summary(analysis.recent)
     header = f"**{name}** · {label} analysis\n-# {period.capitalize()} · {' · '.join(records)}"
-    command_name = discord.utils.escape_markdown(analysis.riot_id.split("#", 1)[0])
+    # Inline code needs literal underscores; use the tag to avoid ambiguous names.
+    command_name = analysis.riot_id.replace("`", "'")
     if not analysis.enough_games:
         body = (
             f"Not enough {label} games to analyze yet: {analysis.games} in the {period}, "

@@ -1,4 +1,5 @@
 import requests
+import pytest
 
 from src.discord_text import (
     describe_error_for_user,
@@ -8,7 +9,21 @@ from src.discord_text import (
     format_streak_callout,
     format_user_error,
     recap_queue_label,
+    split_message_text,
 )
+
+
+@pytest.mark.parametrize("text", ["", "short", "x" * 4500, ("A line of text\n" * 400)])
+def test_plain_text_chunks_are_lossless_and_within_discord_limit(text):
+    chunks = split_message_text(text)
+    assert "".join(chunks) == text
+    assert all(0 < len(chunk) <= 2000 for chunk in chunks)
+
+
+def test_plain_text_chunks_prefer_line_boundaries():
+    assert split_message_text("hello\nworld", limit=8) == ["hello\n", "world"]
+    with pytest.raises(ValueError):
+        split_message_text("text", limit=0)
 
 
 def test_recap_queue_label_drops_the_leading_icon():

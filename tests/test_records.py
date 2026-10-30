@@ -205,6 +205,15 @@ def test_jungle_personal_bests_use_existing_recap_history_guards():
     assert [(b.category.key, b.personal) for b in found] == [("buffs_stolen", True)]
 
 
+def test_dragon_and_baron_records_are_removed_everywhere():
+    book = build_record_book(history(dragons=1, barons=1))
+    new = row(days=400, dragons=99, barons=99)
+    assert detect_record_breaks(book, [(new["match_id"], [new])]) == {}
+    for sections in (format_group_sections(book), format_personal_sections(book, "Nox#EUW")):
+        text = "\n".join(sections).casefold()
+        assert "dragon" not in text and "baron" not in text
+
+
 def test_personal_best_line():
     book = build_record_book([row("NoxVain#EUW", vision=144, champion="Rell", days=40)])
     line = format_record_break(
@@ -261,8 +270,6 @@ def test_group_card_jungle_section():
         "**Jungle**\n"
         "**80** enemy jungle minions · ÇÛΜÌŃΜÝÄŠŠ · Vi · Jan 2025\n"
         "**15** buffs stolen · JonastCvuHU · Karthus · Jan 2025\n"
-        "**6** dragons · ÇÛΜÌŃΜÝÄŠŠ · Vi · Jan 2025\n"
-        "**1** baron · Gizhmo · Kaisa · Jan 2025\n"
         "**5** objective steals (career) · ÇÛΜÌŃΜÝÄŠŠ · group total 6"
     )
     # Jungle sits between Farm and map and Pain; personal cards include measured jungle records.
@@ -275,10 +282,10 @@ def test_group_card_jungle_section():
 
 
 def test_teammates_tied_in_one_game_resolve_by_name():
-    nox = row("NoxVain#EUW", barons=4, champion="Amumu")
-    giz = dict(row("gizhmo#EUW", barons=4, champion="Kaisa"), match_id=nox["match_id"], game_end_at=nox["game_end_at"])
+    nox = row("NoxVain#EUW", buffs=4, champion="Amumu")
+    giz = dict(row("gizhmo#EUW", buffs=4, champion="Kaisa"), match_id=nox["match_id"], game_end_at=nox["game_end_at"])
     for rows in ([nox, giz], [giz, nox]):
-        assert build_record_book(rows).record("barons").riot_id == "gizhmo#EUW"
+        assert build_record_book(rows).record("buffs_stolen").riot_id == "gizhmo#EUW"
 
 
 def test_group_card_with_no_games():
@@ -354,6 +361,8 @@ class FakeChannel:
         self.sent = []
 
     async def send(self, content=None, *, view=None, tts=False):
+        if content is not None and len(content) > 2000:
+            raise ValueError("Discord content limit exceeded")
         if view is not None and self.reject_views:
             raise discord.HTTPException(type("Response", (), {"status": 400, "reason": "Bad"})(), "bad card")
         self.sent.append(view_text(view) if view is not None else content)
@@ -373,7 +382,7 @@ class FakeMessage:
         self.author = FakeAuthor()
 
 
-def run_command(content, *, channel=None, db_enabled=True, rows=None, fail=False, logs=None):
+def run_command(content, *, channel=None, db_enabled=True, rows=None, fail=False, logs=None, manual_channel_id=None):
     channel = channel or FakeChannel()
 
     def iter_rows(queue_ids, *, before=None, exclude_match_ids=()):
@@ -400,6 +409,7 @@ def run_command(content, *, channel=None, db_enabled=True, rows=None, fail=False
         db_upsert_player=None,
         log=(logs.append if logs is not None else (lambda _msg: None)),
         events_channel_id=999,
+        manual_commands_channel_id=manual_channel_id,
         db_load_tracked_puuids=lambda: [("NoxVain#EUW", "nox"), ("Tamarin#EUW", "tam"), ("Pending#EUW", None)],
         db_iter_record_rows=iter_rows,
     ))
@@ -419,6 +429,22 @@ def test_record_alias_supports_personal_and_group_cards():
     assert "personal bests" in run_command("!record NoxVain").sent[0]
 
 
+def test_records_manual_channel_rejects_automatic_channel_before_loading_data():
+    blocked = run_command("!record NoxVain", manual_channel_id=888, fail=True)
+    assert blocked.sent == ["Use `!record` in <#888>."]
+    allowed = run_command("!record NoxVain", manual_channel_id=888, channel=FakeChannel(888))
+    assert "personal bests" in allowed.sent[0]
+
+
+def test_long_group_card_falls_back_to_multiple_complete_text_messages():
+    rows = [row("_" * 32 + "#EUW", champion="Nunu & Willump", kills=36, deaths=0,
+                assists=44, minutes=70, pentas=2, camps=80, buffs=8, steals=2)]
+    text = "\n\n".join(format_group_sections(build_record_book(rows)))
+    assert len(text) > 2000
+    channel = run_command("!records", rows=rows, channel=FakeChannel(reject_views=True))
+    assert len(channel.sent) > 1 and "".join(channel.sent) == text
+
+
 def test_personal_jungle_records_skip_missing_and_zero_values():
     book = build_record_book([row(buffs=0, dragons=None, barons=0, steals=0)])
     assert not any(section.startswith("**Jungle and objectives**")
@@ -426,7 +452,7 @@ def test_personal_jungle_records_skip_missing_and_zero_values():
     book.add(row(days=1, buffs=3, dragons=4, barons=2, steals=1))
     jungle = next(section for section in format_personal_sections(book, "Nox#EUW")
                   if section.startswith("**Jungle and objectives**"))
-    assert all(text in jungle for text in ("**3** buffs stolen", "**4** dragons", "**2** barons", "**1** objective steals (career)"))
+    assert all(text in jungle for text in ("**3** buffs stolen", "**1** objective steals (career)"))
 
 
 def test_records_command_sends_personal_bests():

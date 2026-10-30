@@ -10,6 +10,7 @@ import pytest
 from src.discord_command_handlers import handle_incoming_message
 from src.player_analysis import (
     ANALYSIS_ACCENT,
+    analysis_start,
     analyze_player,
     build_analysis_view,
     format_analysis_sections,
@@ -23,6 +24,75 @@ NOW = datetime(2026, 10, 27, 12, 0, tzinfo=timezone.utc)
 UTC = timezone.utc
 
 
+@pytest.fixture(autouse=True)
+def freeze_analysis_command_clock(monkeypatch):
+    from src.commands import analysis_handlers
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW.astimezone(tz) if tz else NOW.replace(tzinfo=None)
+
+    monkeypatch.setattr(analysis_handlers, "datetime", FixedDatetime)
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("Player 2", ("Player 2", "solo", 1)),
+    ("Player 2 3", ("Player 2", "solo", 3)),
+    ("Player 2 flex 3", ("Player 2", "flex", 3)),
+    ("Player 2 3 flex", ("Player 2", "flex", 3)),
+    ("Player 2#EUW 3", ("Player 2#EUW", "solo", 3)),
+])
+def test_numeric_player_names_are_preserved(raw, expected):
+    assert parse_analyze_args(raw, tracked=[("Player 2#EUW", "p2")]) == expected
+
+
+def test_numeric_name_command_uses_selected_months_in_database_query():
+    channel, calls = run_command("!analyze Player 2 3 flex", tracked=[("Player 2#EUW", "p2")])
+    assert calls == [("rows", "p2", analysis_start(NOW, 3)), ("totals", 440)]
+    assert "Player 2#EUW" in channel.sent[0] and "Last 3 months" in channel.sent[0]
+
+
+def test_ambiguous_numeric_names_require_tag_instead_of_selecting_another_player():
+    tracked = [("Player 2#EUW", "p2"), ("Player 2#NA1", "p2na"), ("Player#EUW", "p")]
+    channel, calls = run_command("!analyze Player 2", tracked=tracked)
+    assert calls == [] and "Several tracked players" in channel.sent[0]
+
+
+def test_lane_cs_at_ten_excludes_games_ending_before_ten_minutes():
+    from src.player_analysis import _metric_findings
+
+    rows = [dict(game(29 - i / 2, True, role="MIDDLE"),
+                 game_end_at=NOW - timedelta(hours=(40 - i) * 12),
+                 deaths=0, lane_cs_10=90 if i < 20 else 20,
+                 duration_seconds=1800 if i < 20 else 480) for i in range(40)]
+    assert _metric_findings(rows) == ([], [])
+
+
+def test_analysis_computation_errors_get_safe_reply(monkeypatch):
+    from src.commands import analysis_handlers
+
+    def fail_analysis(**kwargs):
+        raise RuntimeError("private database details")
+
+    monkeypatch.setattr(analysis_handlers, "analyze_player", fail_analysis)
+    logs = []
+    channel, _ = run_command("!analyze NoxVain", logs=logs)
+    assert channel.sent[0].startswith("Analysis failed:")
+    assert "private database details" not in channel.sent[0]
+    assert "private database details" in logs[-1]
+
+
+def test_long_analysis_plain_text_fallback_is_split_without_losing_text(monkeypatch):
+    from src.commands import analysis_handlers
+
+    text = "A full finding with its evidence.\n" * 100
+    monkeypatch.setattr(analysis_handlers, "format_analysis_text", lambda _analysis: text)
+    channel, _ = run_command("!analyze NoxVain", channel=FakeChannel(reject_views=True))
+    assert len(channel.sent) > 1
+    assert "".join(channel.sent) == text
+
+
 @pytest.mark.parametrize("raw, expected", [
     ("Not a snake 3", ("Not a snake", "solo", 3)),
     ("Name#EUW 3 FLEX", ("Name#EUW", "flex", 3)),
@@ -32,7 +102,7 @@ def test_months_and_queue_suffixes(raw, expected):
     assert parse_analyze_args(raw) == expected
 
 
-@pytest.mark.parametrize("suffix", ["0", "13", "-1", "1.5", "3 4", "solo flex"])
+@pytest.mark.parametrize("suffix", ["0", "13", "-1", "+3", "²", "1.5", "3 4", "solo flex"])
 def test_invalid_analysis_arguments_fail_before_database(suffix):
     channel, calls = run_command(f"!analyze NoxVain {suffix}")
     assert calls == []
@@ -239,7 +309,7 @@ def test_too_few_games_gives_no_findings_and_points_to_other_queue():
     assert not analysis.enough_games and analysis.strengths == [] and analysis.tips == []
     assert len(sections) == 3
     assert "Not enough Solo/Duo games to analyze yet: 10 in the last 12 months, 20 needed." in sections[2]
-    assert "`!analyze NoxVain 12 flex`" in sections[2]
+    assert "`!analyze NoxVain#EUW 12 flex`" in sections[2]
 
 
 def test_best_and_weakest_champions_need_ten_games_and_a_clear_gap():
@@ -370,7 +440,7 @@ def test_sections_header_footer_and_escaping():
     assert strengths == "**Strengths**\nNothing stands out yet."
     assert tips == "**Work on**\nNo clear weak spots in these games."
     assert footer.startswith("-# Solo/Duo games since 31 Dec 2025 · patterns need 10+ games per comparison; observations, not causes · ")
-    assert footer.endswith("`!analyze xX\\_snake\\_Xx 12 flex` for Flex")
+    assert footer.endswith("`!analyze xX_snake_Xx#EUW 12 flex` for Flex")
 
 
 def test_header_without_other_queue_games():
@@ -398,6 +468,8 @@ class FakeChannel:
         self.sent = []
 
     async def send(self, content=None, *, view=None, tts=False):
+        if content is not None and len(content) > 2000:
+            raise ValueError("Discord content limit exceeded")
         if view is not None and self.reject_views:
             raise discord.HTTPException(type("Response", (), {"status": 400, "reason": "Bad"})(), "bad card")
         self.sent.append(view_text(view) if view is not None else content)
@@ -421,17 +493,19 @@ def default_rows():
     return games_with(14, 6, champion="Zyra", start_days_ago=26) + games_with(3, 9, champion="Lux", start_days_ago=15)
 
 
-def run_command(content, *, channel=None, db_enabled=True, rows=None, calls=None, fail=False, logs=None, manual_channel_id=None):
+def run_command(content, *, channel=None, db_enabled=True, rows=None, calls=None, fail=False, logs=None, manual_channel_id=None, tracked=None):
     channel = channel or FakeChannel()
     calls = calls if calls is not None else []
 
-    def load_rows(puuid, since):
-        calls.append(("rows", puuid, round((NOW - since).days / 365, 0)))
+    def load_rows(puuid, since, *, until):
+        assert until == NOW
+        calls.append(("rows", puuid, since))
         if fail:
             raise RuntimeError("connection to server at 10.0.0.1 failed")
         return rows if rows is not None else default_rows()
 
-    def load_totals(queue_id, since):
+    def load_totals(queue_id, since, *, until):
+        assert until == NOW
         calls.append(("totals", queue_id))
         return {}
 
@@ -455,7 +529,7 @@ def run_command(content, *, channel=None, db_enabled=True, rows=None, calls=None
         log=(logs.append if logs is not None else (lambda _msg: None)),
         events_channel_id=999,
         manual_commands_channel_id=manual_channel_id,
-        db_load_tracked_puuids=lambda: [("NoxVain#EUW", "nox"), ("Pending#EUW", None)],
+        db_load_tracked_puuids=lambda: tracked if tracked is not None else [("NoxVain#EUW", "nox"), ("Pending#EUW", None)],
         db_load_player_analysis_rows=load_rows,
         db_load_role_group_totals=load_totals,
     ))
@@ -466,7 +540,7 @@ def test_analyze_command_sends_card_for_tracked_player():
     logs = []
     channel, calls = run_command("!analyze noxvain flex", logs=logs)
 
-    assert calls == [("rows", "nox", 0.0), ("totals", 440)]
+    assert calls == [("rows", "nox", analysis_start(NOW)), ("totals", 440)]
     assert len(channel.sent) == 1 and channel.sent[0].startswith("**NoxVain#EUW** · Flex analysis")
     assert logs[-1] == "[analyze] Sent flex analysis for NoxVain#EUW: months=1 games=0 strengths=0 tips=0."
 
@@ -543,3 +617,21 @@ def test_db_analysis_queries_map_rows(monkeypatch):
     assert queries[0][1] == ("nox", [420, 440], NOW) and "NOT remake" in queries[0][0]
     assert totals == {"UTILITY": {"games": 10, "kills": 20, "deaths": 30, "assists": 80, "minutes": 300.0}}
     assert queries[1][1] == (440, NOW) and "GROUP BY team_position" in queries[1][0]
+
+
+def test_database_player_and_baseline_queries_share_the_end_of_window(monkeypatch):
+    from src.db import match_stats as db_match_stats
+
+    queries = []
+
+    def fake_execute(query, params=None, **kwargs):
+        queries.append((query, params))
+        return []
+
+    monkeypatch.setattr(db_match_stats, "db_execute", fake_execute)
+    start = analysis_start(NOW, 3)
+    db_match_stats.db_load_player_analysis_rows("p", start, until=NOW)
+    db_match_stats.db_load_role_group_totals(420, start, until=NOW)
+    assert queries[0][1] == ("p", [420, 440], start, NOW)
+    assert queries[1][1] == (420, start, NOW)
+    assert all("AND game_end_at <= %s" in query for query, _params in queries)
