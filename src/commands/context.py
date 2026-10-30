@@ -41,3 +41,4 @@ class CommandHandlerContext:
     db_iter_record_rows: Any = None
     db_iter_wrapped_rows: Any = None
     db_load_all_ranked_states: Any = None
+    manual_commands_channel_id: int | None = None

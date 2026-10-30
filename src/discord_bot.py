@@ -671,6 +671,7 @@ async def on_ready():
     log(f"[startup] REPORT_CACHE_SECONDS={REPORT_CACHE_SECONDS}")
     log(f"[startup] MATCH_CACHE_RETENTION_DAYS={MATCH_CACHE_RETENTION_DAYS}")
     log(f"[startup] EVENTS_CHANNEL_ID={EVENTS_CHANNEL_ID}")
+    log(f"[startup] Manual analyze/records channel={cfg.MANUAL_COMMANDS_CHANNEL_ID}")
     log(f"[startup] WEEKLY_REPORT_CHANNEL_ID={WEEKLY_REPORT_CHANNEL_ID}")
     log(f"[startup] MATCH_RECAP_CHANNEL_ID={MATCH_RECAP_CHANNEL_ID}")
     log(f"[startup] MATCH_RECAP_POLL_SECONDS={MATCH_RECAP_POLL_SECONDS}")
@@ -784,6 +785,7 @@ async def on_message(message):
         db_iter_record_rows=db_iter_record_rows,
         db_iter_wrapped_rows=db_iter_wrapped_rows,
         db_load_all_ranked_states=db_load_all_ranked_states,
+        manual_commands_channel_id=cfg.MANUAL_COMMANDS_CHANNEL_ID,
     )
 
 

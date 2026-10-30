@@ -8,15 +8,15 @@ import asyncio
 
 import discord
 
-from src.constants import RECORDS_COMMAND
+from src.constants import RECORDS_COMMAND, RECORDS_ALIAS
 from src.discord_text import format_user_error
 from src.player_analysis import resolve_tracked_player
 from src.records import build_records_view, format_group_sections, format_personal_sections, load_record_book
 
 
 def _is_records_command(content_lower):
-    prefix = RECORDS_COMMAND.casefold()
-    return content_lower == prefix or content_lower.startswith(f"{prefix} ")
+    return any(content_lower == prefix or content_lower.startswith(f"{prefix} ")
+               for prefix in (RECORDS_COMMAND, RECORDS_ALIAS))
 
 
 async def handle_records_commands(ctx):
@@ -27,7 +27,7 @@ async def handle_records_commands(ctx):
         await channel.send("Records need the database, which isn't configured.")
         return True
 
-    query = ctx.content[len(RECORDS_COMMAND):].strip()
+    query = ctx.content.split(maxsplit=1)[1].strip() if " " in ctx.content else ""
     riot_id = None
     try:
         if query:

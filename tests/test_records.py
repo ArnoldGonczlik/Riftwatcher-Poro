@@ -197,6 +197,14 @@ def test_personal_bests_skip_worst_categories_and_group_records_come_first():
     ]
 
 
+def test_jungle_personal_bests_use_existing_recap_history_guards():
+    book = build_record_book(history(riot_id="Leader#EUW", buffs=10)
+                             + history(riot_id="Nox#EUW", buffs=1))
+    new = row("Nox#EUW", days=400, buffs=3)
+    found = detect_record_breaks(book, [(new["match_id"], [new])])[(new["match_id"], "Nox#EUW")]
+    assert [(b.category.key, b.personal) for b in found] == [("buffs_stolen", True)]
+
+
 def test_personal_best_line():
     book = build_record_book([row("NoxVain#EUW", vision=144, champion="Rell", days=40)])
     line = format_record_break(
@@ -251,17 +259,19 @@ def test_group_card_jungle_section():
     jungle = next(section for section in sections if section.startswith("**Jungle**"))
     assert jungle == (
         "**Jungle**\n"
-        "**80** enemy jungle camps · ÇÛΜÌŃΜÝÄŠŠ · Vi · Jan 2025\n"
+        "**80** enemy jungle minions · ÇÛΜÌŃΜÝÄŠŠ · Vi · Jan 2025\n"
         "**15** buffs stolen · JonastCvuHU · Karthus · Jan 2025\n"
         "**6** dragons · ÇÛΜÌŃΜÝÄŠŠ · Vi · Jan 2025\n"
         "**1** baron · Gizhmo · Kaisa · Jan 2025\n"
         "**5** objective steals (career) · ÇÛΜÌŃΜÝÄŠŠ · group total 6"
     )
-    # Jungle sits between Farm and map and Pain; it stays off personal cards.
+    # Jungle sits between Farm and map and Pain; personal cards include measured jungle records.
     order = [section.split("\n", 1)[0] for section in sections]
     assert order.index("**Farm and map**") < order.index("**Jungle**") < order.index("**Pain**")
     personal = "\n\n".join(format_personal_sections(build_record_book(rows), "JonastCvuHU#UNC"))
-    assert "buffs stolen" not in personal
+    assert "**Jungle and objectives**" in personal
+    assert "**15** buffs stolen" in personal
+    assert "enemy jungle minions" not in personal
 
 
 def test_teammates_tied_in_one_game_resolve_by_name():
@@ -402,6 +412,21 @@ def test_records_command_sends_group_card():
     assert channel.sent[0].startswith("🏆 **Hall of Fame**")
     assert "**30** kills · Tamarin" in channel.sent[0]
     assert logs[-1] == "[records] Sent group records: games=2 matches=2."
+
+
+def test_record_alias_supports_personal_and_group_cards():
+    assert "Hall of Fame" in run_command("!record").sent[0]
+    assert "personal bests" in run_command("!record NoxVain").sent[0]
+
+
+def test_personal_jungle_records_skip_missing_and_zero_values():
+    book = build_record_book([row(buffs=0, dragons=None, barons=0, steals=0)])
+    assert not any(section.startswith("**Jungle and objectives**")
+                   for section in format_personal_sections(book, "Nox#EUW"))
+    book.add(row(days=1, buffs=3, dragons=4, barons=2, steals=1))
+    jungle = next(section for section in format_personal_sections(book, "Nox#EUW")
+                  if section.startswith("**Jungle and objectives**"))
+    assert all(text in jungle for text in ("**3** buffs stolen", "**4** dragons", "**2** barons", "**1** objective steals (career)"))
 
 
 def test_records_command_sends_personal_bests():

@@ -23,6 +23,148 @@ NOW = datetime(2026, 10, 27, 12, 0, tzinfo=timezone.utc)
 UTC = timezone.utc
 
 
+@pytest.mark.parametrize("raw, expected", [
+    ("Not a snake 3", ("Not a snake", "solo", 3)),
+    ("Name#EUW 3 FLEX", ("Name#EUW", "flex", 3)),
+    ("Name#EUW flex 12", ("Name#EUW", "flex", 12)),
+])
+def test_months_and_queue_suffixes(raw, expected):
+    assert parse_analyze_args(raw) == expected
+
+
+@pytest.mark.parametrize("suffix", ["0", "13", "-1", "1.5", "3 4", "solo flex"])
+def test_invalid_analysis_arguments_fail_before_database(suffix):
+    channel, calls = run_command(f"!analyze NoxVain {suffix}")
+    assert calls == []
+    assert "month" in channel.sent[0]
+
+
+def test_calendar_window_clamps_month_end_and_leap_year():
+    from src.player_analysis import analysis_start
+
+    for year, day in ((2024, 29), (2025, 28)):
+        now = datetime(year, 3, 31, 12, tzinfo=UTC)
+        assert analysis_start(now) == datetime(year, 2, day, 12, tzinfo=UTC)
+    assert analysis_start(datetime(2026, 1, 31, tzinfo=UTC), 3) == datetime(2025, 10, 31, tzinfo=UTC)
+
+
+def test_default_month_filters_old_future_and_boundary_games():
+    from src.player_analysis import analysis_start
+
+    rows = [game(1, True), game(29, False), game(60, True), game(-1, True)]
+    rows.append(dict(game(1, True), game_end_at=analysis_start(NOW)))
+    kwargs = dict(riot_id="Nox#EUW", games=rows, queue="solo", role_baselines={},
+                  names_by_puuid={}, now=NOW, tz=UTC, day_start_hour=6)
+    monthly = analyze_player(**kwargs)
+    quarterly = analyze_player(**kwargs, months=3)
+    assert (monthly.games, monthly.wins, monthly.months) == (2, 1, 1)
+    assert quarterly.games == 4
+
+
+def test_last_twenty_summary_uses_selected_queue_and_latest_games():
+    rows = [dict(game(29 - i, i >= 10, role="MIDDLE"), cs=180, kill_participation=0.65) for i in range(30)]
+    rows += [dict(game(1, False, queue=440), cs=0)]
+    report = analyze(rows)
+    sections = format_analysis_sections(report)
+    assert sections[1].startswith("**Last 20 games")
+    assert "20W-0L" in sections[1]
+    assert "CS/min **6.0**" in sections[1] and "KP **65%**" in sections[1]
+    assert sections[2].startswith("**Strengths**")
+
+
+def measured_games(role="MIDDLE", count=40):
+    return [dict(game(29 - i / 2, i % 2 == 0, role=role),
+                 game_end_at=NOW - timedelta(hours=(40 - i) * 12), cs=240 if i < 20 else 150,
+                 vision_score=30 if i < 20 else 9, deaths=2 if i < 20 else 5,
+                 kill_participation=0.7 if i < 20 else 0.4,
+                 dragon_takedowns=3 if i < 20 else 1, baron_takedowns=0, herald_takedowns=0)
+            for i in range(count)]
+
+
+def test_multiple_evidence_backed_work_on_findings_without_fillers():
+    report = analyze(measured_games())
+    assert len(report.tips) == 3
+    assert all("earlier 20 vs recent 20 games" in text for text in report.tips)
+    assert report.strengths == []
+    assert any("CS/min" in text for text in report.tips)
+    assert any("vision/min" in text for text in report.tips)
+
+
+def test_improving_metrics_create_strengths():
+    rows = measured_games()
+    for row in rows:
+        row["game_end_at"] = NOW - (row["game_end_at"] - (NOW - timedelta(days=29)))
+    report = analyze(rows)
+    assert len(report.strengths) == 3
+    assert report.tips == []
+
+
+def test_missing_or_mixed_context_metrics_do_not_invent_weaknesses():
+    rows = measured_games()
+    for row in rows[20:]:
+        row["champion_name"] = "Ahri"
+    assert analyze(rows).tips == []
+    for row in rows:
+        row["champion_name"] = "Lux"
+        for key in ("cs", "vision_score", "kill_participation"):
+            row[key] = None
+        row["deaths"] = 3
+    report = analyze(rows)
+    assert report.tips == [] and report.strengths == []
+    summary = format_analysis_sections(report)[1]
+    assert "CS/min **N/A**" in summary and "KP **N/A**" in summary
+    assert "CS 0/20" in summary
+
+
+def test_jungle_objectives_supported_but_support_never_gets_farming_advice():
+    from src.player_analysis import _metric_findings
+
+    _, tips = _metric_findings(measured_games(role="JUNGLE"))
+    assert any("epic objective takedowns/game" in f.text for f in tips)
+    _, tips = _metric_findings(measured_games(role="UTILITY"))
+    assert not any("CS/min" in f.text or "CS at 10" in f.text for f in tips)
+
+
+def test_fewer_than_ten_measured_games_per_side_gives_no_metric_findings():
+    from src.player_analysis import _metric_findings
+
+    assert _metric_findings(measured_games(count=19)) == ([], [])
+
+
+def test_noisy_or_tiny_metric_changes_do_not_become_advice():
+    from src.player_analysis import _metric_findings
+
+    rows = measured_games()
+    for i, row in enumerate(rows):
+        row.update(deaths=3, vision_score=None, kill_participation=None,
+                   cs=(0 if i % 2 else 600) + (30 if i >= 20 else 0))
+    assert _metric_findings(rows) == ([], [])
+    for i, row in enumerate(rows):
+        row["cs"] = 180 + (3 if i >= 20 else 0)
+    assert _metric_findings(rows) == ([], [])
+
+
+def test_role_changes_do_not_create_metric_trends():
+    from src.player_analysis import _metric_findings
+
+    rows = measured_games()
+    for row in rows[20:]:
+        row["team_position"] = "UTILITY"
+    assert _metric_findings(rows) == ([], [])
+
+
+def test_new_monthly_trend_works_without_ninety_days_of_history():
+    rows = [game(29 - i / 2, i >= 20) for i in range(40)]
+    assert any("latest 20 games" in line for line in analyze(rows).strengths)
+
+
+def test_manual_channel_blocks_automatic_channel_before_queries():
+    blocked, calls = run_command("!analyze NoxVain 3", manual_channel_id=888)
+    assert calls == [] and blocked.sent == ["Use `!analyze` in <#888>."]
+    allowed, calls = run_command("!analyze NoxVain 3", channel=FakeChannel(888), manual_channel_id=888)
+    assert len(calls) == 2 and "Last 3 months" in allowed.sent[0]
+
+
 def game(days_ago, win, *, champion="Lux", role="UTILITY", queue=420, kills=2, deaths=3, assists=8,
          minutes=30, gold_diff=0, cs_diff=0, teammates=(), hour=12):
     end = (NOW - timedelta(days=days_ago)).replace(hour=hour)
@@ -60,13 +202,14 @@ def analyze(games, *, queue="solo", baselines=None, names=None):
         now=NOW,
         tz=UTC,
         day_start_hour=6,
+        months=12,
     )
 
 
 def test_parse_analyze_args_takes_optional_queue_word():
-    assert parse_analyze_args("Not a snake flex") == ("Not a snake", "flex")
-    assert parse_analyze_args("NoxVain#EUW SOLO") == ("NoxVain#EUW", "solo")
-    assert parse_analyze_args("NoxVain") == ("NoxVain", "solo")
+    assert parse_analyze_args("Not a snake flex") == ("Not a snake", "flex", 1)
+    assert parse_analyze_args("NoxVain#EUW SOLO") == ("NoxVain#EUW", "solo", 1)
+    assert parse_analyze_args("NoxVain") == ("NoxVain", "solo", 1)
 
 
 TRACKED = [("NoxVain#EUW", "nox"), ("Rayke#EUW", "rayke"), ("Rayke#NA1", "rayke-na")]
@@ -94,9 +237,9 @@ def test_too_few_games_gives_no_findings_and_points_to_other_queue():
     sections = format_analysis_sections(analysis)
 
     assert not analysis.enough_games and analysis.strengths == [] and analysis.tips == []
-    assert len(sections) == 2
-    assert "Not enough Solo/Duo games to analyze yet: 10 in the last 12 months, 20 needed." in sections[1]
-    assert "`!analyze NoxVain flex`" in sections[1]
+    assert len(sections) == 3
+    assert "Not enough Solo/Duo games to analyze yet: 10 in the last 12 months, 20 needed." in sections[2]
+    assert "`!analyze NoxVain 12 flex`" in sections[2]
 
 
 def test_best_and_weakest_champions_need_ten_games_and_a_clear_gap():
@@ -123,7 +266,7 @@ def test_off_roles_tip_names_records_and_lane_gold():
 
     analysis = analyze(games)
 
-    assert "Stay on support: 60% in 50 games; Jungle 4/12, Top 5/12, ~2.5k gold behind your lane opponent there" in analysis.tips
+    assert "Stay on support: 60% in 50 games; Jungle 4/12, Top 5/12, ~2.5k gold behind your role opponent at game end" in analysis.tips
 
 
 def test_trend_down_mentions_rising_kda_and_trend_up_is_a_strength():
@@ -150,8 +293,8 @@ def test_tilt_tip_and_no_tilt_strength():
         first, second = pairs[day % 4]
         steady += [game(300 - day, first, hour=12), game(300 - day, second, hour=13)]
 
-    assert any(line.startswith("Take a break after a loss: 25% in the next game") for line in analyze(tilted).tips)
-    assert any(line.startswith("No tilt:") for line in analyze(steady).strengths)
+    assert any(line.startswith("Consider a break after losses: next-game wins 25%") for line in analyze(tilted).tips)
+    assert any(line.startswith("Steady after losses:") for line in analyze(steady).strengths)
 
 
 def test_long_sessions_tip():
@@ -162,7 +305,7 @@ def test_long_sessions_tip():
 
     tips = analyze(games).tips
 
-    assert "Stop after 3 games a day: 10% from game 4 on, 84% before" in tips
+    assert "Consider shorter sessions: 10% from game 4 on (50 games), 84% before (75)" in tips
 
 
 def test_only_the_best_duo_partner_is_named():
@@ -195,8 +338,8 @@ def test_laning_slip_only_for_laners():
     adc = games_with(25, 25, role="BOTTOM", cs_diff=8, start_days_ago=300) + games_with(12, 13, role="BOTTOM", cs_diff=-6, start_days_ago=80)
     support = [dict(g, team_position="UTILITY") for g in adc]
 
-    assert "Laning slipped: -6 CS vs your opponent in the last 90 days (+8 before)" in analyze(adc).tips
-    assert not any("Laning" in line for line in analyze(support).tips)
+    assert "End-game CS gap slipped: -6 CS vs your opponent in the last 90 days (+8 before)" in analyze(adc).tips
+    assert not any("End-game CS" in line for line in analyze(support).tips)
 
 
 def test_at_most_three_findings_strongest_first():
@@ -216,9 +359,9 @@ def test_sections_header_footer_and_escaping():
 
     analysis = analyze_player(
         riot_id="xX_snake_Xx#EUW", games=games, queue="solo", role_baselines={}, names_by_puuid={},
-        now=NOW, tz=UTC, day_start_hour=6,
+        now=NOW, tz=UTC, day_start_hour=6, months=12,
     )
-    header, strengths, tips, footer = format_analysis_sections(analysis)
+    header, recent, strengths, tips, footer = format_analysis_sections(analysis)
 
     assert header == (
         "**xX\\_snake\\_Xx#EUW** · Solo/Duo analysis\n"
@@ -226,8 +369,8 @@ def test_sections_header_footer_and_escaping():
     )
     assert strengths == "**Strengths**\nNothing stands out yet."
     assert tips == "**Work on**\nNo clear weak spots in these games."
-    assert footer.startswith("-# Solo/Duo games since 31 Dec 2025 · tips need 10+ games · ")
-    assert footer.endswith("`!analyze xX\\_snake\\_Xx flex` for Flex")
+    assert footer.startswith("-# Solo/Duo games since 31 Dec 2025 · patterns need 10+ games per comparison; observations, not causes · ")
+    assert footer.endswith("`!analyze xX\\_snake\\_Xx 12 flex` for Flex")
 
 
 def test_header_without_other_queue_games():
@@ -245,7 +388,7 @@ def test_build_analysis_view_is_one_accented_container():
     container = view.children[0]
     assert getattr(container.accent_colour, "value", container.accent_colour) == ANALYSIS_ACCENT
     assert view_text(view) == format_analysis_text(analysis)
-    assert sum(1 for item in container.walk_children() if isinstance(item, discord.ui.Separator)) == 3
+    assert sum(1 for item in container.walk_children() if isinstance(item, discord.ui.Separator)) == 4
 
 
 class FakeChannel:
@@ -275,10 +418,10 @@ class FakeMessage:
 
 
 def default_rows():
-    return games_with(14, 6, champion="Zyra") + games_with(3, 9, champion="Lux", start_days_ago=200)
+    return games_with(14, 6, champion="Zyra", start_days_ago=26) + games_with(3, 9, champion="Lux", start_days_ago=15)
 
 
-def run_command(content, *, channel=None, db_enabled=True, rows=None, calls=None, fail=False, logs=None):
+def run_command(content, *, channel=None, db_enabled=True, rows=None, calls=None, fail=False, logs=None, manual_channel_id=None):
     channel = channel or FakeChannel()
     calls = calls if calls is not None else []
 
@@ -311,6 +454,7 @@ def run_command(content, *, channel=None, db_enabled=True, rows=None, calls=None
         db_upsert_player=None,
         log=(logs.append if logs is not None else (lambda _msg: None)),
         events_channel_id=999,
+        manual_commands_channel_id=manual_channel_id,
         db_load_tracked_puuids=lambda: [("NoxVain#EUW", "nox"), ("Pending#EUW", None)],
         db_load_player_analysis_rows=load_rows,
         db_load_role_group_totals=load_totals,
@@ -322,9 +466,9 @@ def test_analyze_command_sends_card_for_tracked_player():
     logs = []
     channel, calls = run_command("!analyze noxvain flex", logs=logs)
 
-    assert calls == [("rows", "nox", 1.0), ("totals", 440)]
+    assert calls == [("rows", "nox", 0.0), ("totals", 440)]
     assert len(channel.sent) == 1 and channel.sent[0].startswith("**NoxVain#EUW** · Flex analysis")
-    assert logs[-1] == "[analyze] Sent flex analysis for NoxVain#EUW: games=0 strengths=0 tips=0."
+    assert logs[-1] == "[analyze] Sent flex analysis for NoxVain#EUW: months=1 games=0 strengths=0 tips=0."
 
 
 def test_analyse_alias_and_default_queue():
@@ -339,12 +483,12 @@ def test_analyze_falls_back_to_plain_text_when_card_is_rejected():
     logs = []
     channel, _calls = run_command("!analyze NoxVain", channel=FakeChannel(reject_views=True), logs=logs)
 
-    assert channel.sent == [format_analysis_text(analyze(default_rows()))]
+    assert len(channel.sent) == 1 and "Last 1 month" in channel.sent[0] and "**Strengths**" in channel.sent[0]
     assert "[analyze] Discord rejected the analysis card (HTTP 400); sending it as plain text." in logs
 
 
 @pytest.mark.parametrize("content, expected", [
-    ("!analyze", "Usage: `!analyze Name#Tag [solo|flex]` (Solo/Duo unless you add `flex`)."),
+    ("!analyze", "Usage: `!analyze Name#Tag [months] [solo|flex]` (1 month of Solo/Duo by default)."),
     ("!analyze Pending", "`Pending` isn't a tracked player."),
     ("!analyze Nobody#EUW solo", "`Nobody#EUW` isn't a tracked player."),
 ])
@@ -376,7 +520,7 @@ def test_analyze_routing_and_help():
         assert is_supported_command(content)
         assert command_channel_id(content, daily_channel_id=1, weekly_channel_id=2, events_channel_id=3) == 3
     help_text = format_help_text(report_day_start_hour=6, daily_channel_id=1, weekly_channel_id=2, events_channel_id=3)
-    assert "`!analyze Name#Tag [solo|flex]`" in help_text
+    assert "`!analyze Name#Tag [months] [solo|flex]`" in help_text
 
 
 def test_db_analysis_queries_map_rows(monkeypatch):

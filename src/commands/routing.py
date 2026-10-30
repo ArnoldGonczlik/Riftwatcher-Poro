@@ -10,6 +10,7 @@ from src.constants import (
     DAILY_COMMAND,
     PROFILE_COMMAND,
     RECORDS_COMMAND,
+    RECORDS_ALIAS,
     REMOVE_COMMAND,
     RIOT_TEST_COMMAND,
     SCORE_COMMAND,
@@ -21,10 +22,11 @@ from src.constants import (
 )
 
 
-def format_help_text(*, report_day_start_hour, daily_channel_id, weekly_channel_id, events_channel_id, match_recap_channel_id=None):
+def format_help_text(*, report_day_start_hour, daily_channel_id, weekly_channel_id, events_channel_id, match_recap_channel_id=None, manual_commands_channel_id=None):
     daily_channel_ref = f"<#{daily_channel_id}>"
     weekly_channel_ref = f"<#{weekly_channel_id}>" if weekly_channel_id else daily_channel_ref
     events_channel_ref = f"<#{events_channel_id}>"
+    manual_channel_ref = f"<#{manual_commands_channel_id or events_channel_id}>"
     return (
         "**Riftwatcher Poro commands**\n"
         f"- `{DAILY_COMMAND}`: Refresh daily scoreboard (run in {daily_channel_ref}).\n"
@@ -37,15 +39,15 @@ def format_help_text(*, report_day_start_hour, daily_channel_id, weekly_channel_
         f"- `{BACKFILL_COMMAND} YYYY-MM-DD YYYY-MM-DD`: Rebuild historical daily stats from cached matches (run in {events_channel_ref}).\n"
         f"- `{SCORE_COMMAND}`: Show how each player's Gamer Score is calculated today (run in {events_channel_ref}).\n"
         f"- `{PROFILE_COMMAND} Name#Tag`: Show player profile summary (run in {events_channel_ref}).\n"
-        f"- `{ANALYZE_COMMAND} Name#Tag [solo|flex]`: Strengths and tips from a year of ranked games; Solo/Duo unless `flex` (run in {events_channel_ref}).\n"
-        f"- `{RECORDS_COMMAND} [Name#Tag]`: Group records from ranked games, or one player's personal bests (run in {events_channel_ref}).\n"
+        f"- `{ANALYZE_COMMAND} Name#Tag [months] [solo|flex]`: Strengths and tips; 1 month by default, 1-12 months supported (run in {manual_channel_ref}).\n"
+        f"- `{RECORDS_COMMAND} [Name#Tag]` (or `{RECORDS_ALIAS}`): Group records or personal bests (run in {manual_channel_ref}).\n"
         f"- `{WRAPPED_COMMAND} Name#Tag`: A player's Poro Wrapped for the year, from 31 Dec 18:00 until the end of January (run in {events_channel_ref}).\n"
         f"- `{RIOT_TEST_COMMAND}`: Verify Riot API connectivity (run in {events_channel_ref}).\n"
         f"- `{TEST_COMMAND}`: Verify Discord send permissions (run in {events_channel_ref}).\n"
         f"- `{STREAK_COMMAND} Name#Tag`: Manually post current win/loss streak callout (run in {f'<#{match_recap_channel_id}>' if match_recap_channel_id else events_channel_ref}).\n"
         f"- `{TTS_COMMAND} on|off|status`: Toggle streak alert TTS (run in {events_channel_ref} or {f'<#{match_recap_channel_id}>' if match_recap_channel_id else events_channel_ref}).\n"
         f"- `{CHAMPION_DISPLAY_COMMAND} name|icon|both|status`: Show recap champions as name, portrait, or both (run in {events_channel_ref} or {f'<#{match_recap_channel_id}>' if match_recap_channel_id else events_channel_ref}).\n"
-        f"- `{HELP_COMMAND}`: Show this help (run in {events_channel_ref})."
+        f"- `{HELP_COMMAND}`: Show this help (events or manual-command channel)."
     )
 
 
@@ -69,6 +71,7 @@ def is_supported_command(content_lower):
         ANALYZE_COMMAND.casefold(),
         ANALYZE_ALIAS.casefold(),
         RECORDS_COMMAND.casefold(),
+        RECORDS_ALIAS.casefold(),
         WRAPPED_COMMAND.casefold(),
     }
     if content_lower in known_exact:
@@ -85,11 +88,18 @@ def is_supported_command(content_lower):
         or content_lower.startswith(f"{ANALYZE_COMMAND.casefold()} ")
         or content_lower.startswith(f"{ANALYZE_ALIAS.casefold()} ")
         or content_lower.startswith(f"{RECORDS_COMMAND.casefold()} ")
+        or content_lower.startswith(f"{RECORDS_ALIAS.casefold()} ")
         or content_lower.startswith(f"{WRAPPED_COMMAND.casefold()} ")
     )
 
 
-def command_channel_id(content_lower, *, daily_channel_id, weekly_channel_id, events_channel_id, match_recap_channel_id=None):
+def command_channel_id(content_lower, *, daily_channel_id, weekly_channel_id, events_channel_id, match_recap_channel_id=None, manual_commands_channel_id=None):
+    if any(content_lower == command or content_lower.startswith(f"{command} ") for command in (
+        ANALYZE_COMMAND, ANALYZE_ALIAS, RECORDS_COMMAND, RECORDS_ALIAS,
+    )):
+        return manual_commands_channel_id or events_channel_id
+    if content_lower == HELP_COMMAND and manual_commands_channel_id:
+        return tuple(dict.fromkeys((events_channel_id, manual_commands_channel_id)))
     if content_lower == DAILY_COMMAND.casefold():
         return daily_channel_id
     if content_lower == WEEK_COMMAND.casefold():
@@ -155,6 +165,7 @@ async def enforce_command_channel(ctx):
         weekly_channel_id=ctx.weekly_channel_id,
         events_channel_id=ctx.events_channel_id,
         match_recap_channel_id=ctx.match_recap_channel_id,
+        manual_commands_channel_id=getattr(ctx, "manual_commands_channel_id", None),
     )
     if expected_channel_id is None:
         return False

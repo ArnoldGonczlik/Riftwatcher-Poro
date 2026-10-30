@@ -158,3 +158,7 @@ Then smoke test:
 - If Riot rejects the key (`401`/`403`), update `RIOT_API_KEY` and redeploy (see `OPERATIONS.md`). The bot posts a recovery message in the events channel once the new key works.
 - If the bot posts duplicate scoreboards or esports updates, check channel permissions, make sure only one instance uses the database, and see `OPERATIONS.md`.
 - Do not commit `.env`, bot tokens, Riot API keys, esports API keys, or database URLs.
+
+### Manual report channel
+
+Set optional `MANUAL_COMMANDS_CHANNEL_ID` to a Discord channel ID and restart the bot. `!analyze` / `!analyse` and `!records` / `!record` are restricted to that channel; `!help` works there too. If unset or zero, these reports use `EVENTS_CHANNEL_ID`. Automatic posts keep their existing destinations. No new secrets or database migrations are required.

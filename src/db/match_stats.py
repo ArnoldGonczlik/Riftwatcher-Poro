@@ -29,6 +29,14 @@ def db_delete_player_match_stats_except(puuids):
 
 ANALYSIS_ROW_COLUMNS = (
     "queue_id",
+    "cs",
+    "kill_participation",
+    "vision_score",
+    "wards_killed",
+    "lane_cs_10",
+    "dragon_takedowns",
+    "baron_takedowns",
+    "herald_takedowns",
     "game_end_at",
     "duration_seconds",
     "champion_name",

@@ -1,4 +1,4 @@
-"""`!analyze`: a year of one player's ranked games turned into strengths and tips.
+"""`!analyze`: a selected window of one player's ranked games turned into strengths and tips.
 
 Pure logic over `player_match_stats` rows (see src/match_stats.py); no Discord, Riot or
 DB access. Every finding is guarded: it needs a minimum number of games on each side
@@ -9,7 +9,9 @@ three strengths and three things to work on, each with its record.
 Only the best duo partner is ever named; a weak duo is never called out in public.
 """
 
+import calendar
 import math
+import statistics
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -21,7 +23,8 @@ QUEUES = {
     "flex": {"queue_id": 440, "label": "Flex"},
 }
 DEFAULT_QUEUE = "solo"
-ANALYSIS_DAYS = 365
+DEFAULT_MONTHS = 1
+MAX_ANALYSIS_MONTHS = 12
 TREND_DAYS = 90
 
 MIN_QUEUE_GAMES = 20
@@ -66,6 +69,8 @@ class PlayerAnalysis:
     other_queue_games: int
     other_queue_wins: int
     since: object = None
+    months: int = DEFAULT_MONTHS
+    recent: list = field(default_factory=list)
     strengths: list = field(default_factory=list)
     tips: list = field(default_factory=list)
 
@@ -74,12 +79,36 @@ class PlayerAnalysis:
         return self.games >= MIN_QUEUE_GAMES
 
 
+def analysis_start(now, months=DEFAULT_MONTHS):
+    """Rolling calendar months ending now, clamping short months (31 Mar -> 28 Feb)."""
+    if not 1 <= months <= MAX_ANALYSIS_MONTHS:
+        raise ValueError("Choose a whole number of months from 1 to 12.")
+    year, month = divmod(now.year * 12 + now.month - 1 - months, 12)
+    month += 1
+    return now.replace(year=year, month=month, day=min(now.day, calendar.monthrange(year, month)[1]))
+
+
 def parse_analyze_args(raw):
-    """`"Not a snake flex"` -> ("Not a snake", "flex"); the queue word is optional."""
+    """Optional month count and queue suffix, in either order."""
     words = raw.split()
-    if words and words[-1].casefold() in QUEUES:
-        return " ".join(words[:-1]), words[-1].casefold()
-    return " ".join(words), DEFAULT_QUEUE
+    queue, months = DEFAULT_QUEUE, DEFAULT_MONTHS
+    seen = set()
+    while words:
+        token = words[-1].casefold()
+        kind = "queue" if token in QUEUES else "months" if token.replace("-", "", 1).replace(".", "", 1).isdigit() else None
+        if kind is None:
+            break
+        if kind in seen:
+            raise ValueError("Use one month count and one queue: `!analyze Name#Tag 3 flex`.")
+        seen.add(kind)
+        words.pop()
+        if kind == "queue":
+            queue = token
+        else:
+            if not token.isdigit() or not 1 <= int(token) <= MAX_ANALYSIS_MONTHS:
+                raise ValueError("Choose a whole number of months from 1 to 12.")
+            months = int(token)
+    return " ".join(words), queue, months
 
 
 def resolve_tracked_player(query, tracked):
@@ -129,7 +158,7 @@ def _per_ten_minutes(games, key):
 
 
 def _avg(games, key):
-    values = [g[key] for g in games if g[key] is not None]
+    values = [g[key] for g in games if g.get(key) is not None]
     return sum(values) / len(values) if values else None
 
 
@@ -194,7 +223,7 @@ def _role_findings(games, role_baselines, now):
         text = f"Stay on {ROLE_IN_SENTENCE.get(main, main)}: {main_pct}% in {main_n} games; {', '.join(parts)}"
         gold = _avg([g for _n, _role, _wins, role_games in weak_roles[:2] for g in role_games], "opponent_gold_diff")
         if gold is not None and gold <= -1000:
-            text += f", ~{abs(gold) / 1000:.1f}k gold behind your lane opponent there"
+            text += f", ~{abs(gold) / 1000:.1f}k gold behind your role opponent at game end"
         gap = main_pct - min(_pct(w, n) for n, _r, w, _g in weak_roles)
         tips.append(Finding(text, gap * _weight(sum(n for n, *_ in weak_roles))))
 
@@ -204,7 +233,7 @@ def _role_findings(games, role_baselines, now):
         my_kda = _kda(main_games)
         role_name = ROLE_NAMES.get(main, main)
         plural = ROLE_PLURALS.get(main, "players in that role")
-        if my_kda >= group_kda * KDA_RATIO:
+        if group_kda > 0 and my_kda >= group_kda * KDA_RATIO:
             strengths.append(Finding(
                 f"{role_name} KDA {my_kda:.2f}, against {group_kda:.2f} for the group's {plural}",
                 100 * (my_kda / group_kda - 1) * _weight(main_n) / 2,
@@ -225,7 +254,7 @@ def _role_findings(games, role_baselines, now):
             recent_cs, older_cs = _avg(recent, "opponent_cs_diff"), _avg(older, "opponent_cs_diff")
             if recent_cs <= older_cs - LANE_CS_DROP:
                 tips.append(Finding(
-                    f"Laning slipped: {recent_cs:+.0f} CS vs your opponent in the last {TREND_DAYS} days "
+                    f"End-game CS gap slipped: {recent_cs:+.0f} CS vs your opponent in the last {TREND_DAYS} days "
                     f"({older_cs:+.0f} before)",
                     (older_cs - recent_cs) * _weight(len(recent), len(older)) / 2,
                 ))
@@ -256,16 +285,26 @@ def _trend_findings(games, now):
     cutoff = now - timedelta(days=TREND_DAYS)
     recent = [g for g in games if g["game_end_at"] > cutoff]
     older = [g for g in games if g["game_end_at"] <= cutoff]
+    period = f"last {TREND_DAYS} days"
+    if min(len(recent), len(older)) < MIN_SPLIT_GAMES:
+        ordered = sorted(games, key=lambda g: g["game_end_at"], reverse=True)
+        recent, older = ordered[:20], ordered[20:]
+        period = "latest 20 games"
     if len(recent) < MIN_SPLIT_GAMES or len(older) < MIN_SPLIT_GAMES:
         return [], []
     recent_pct = _pct(*_record(recent))
     older_pct = _pct(*_record(older))
+    # A few flipped results in small monthly samples are not a useful trend.
+    gap_needed = TREND_GAP_PP
+    if period == "latest 20 games":
+        p, q = recent_pct / 100, older_pct / 100
+        gap_needed = max(gap_needed, 200 * math.sqrt(p * (1 - p) / len(recent) + q * (1 - q) / len(older)))
     weight = _weight(len(recent), len(older))
-    if recent_pct >= older_pct + TREND_GAP_PP:
-        return [Finding(f"Trending up: {recent_pct}% in the last {TREND_DAYS} days ({len(recent)}), {older_pct}% before",
+    if recent_pct >= older_pct + gap_needed:
+        return [Finding(f"Trending up: {recent_pct}% in the {period} ({len(recent)}), {older_pct}% before",
                         (recent_pct - older_pct) * weight)], []
-    if recent_pct <= older_pct - TREND_GAP_PP:
-        text = f"Last {TREND_DAYS} days {recent_pct}% ({len(recent)}), {older_pct}% before"
+    if recent_pct <= older_pct - gap_needed:
+        text = f"{period.capitalize()} {recent_pct}% ({len(recent)}), {older_pct}% before"
         recent_kda, older_kda = _kda(recent), _kda(older)
         if recent_kda >= older_kda + 0.2:
             text += f", even though KDA rose {older_kda:.2f} → {recent_kda:.2f}"
@@ -286,11 +325,12 @@ def _session_findings(games, tz, day_start_hour):
         weight = _weight(len(after_loss), len(after_win))
         if loss_pct <= win_pct - TILT_GAP_PP:
             tips.append(Finding(
-                f"Take a break after a loss: {loss_pct}% in the next game, {win_pct}% after a win",
+                f"Consider a break after losses: next-game wins {loss_pct}% ({len(after_loss)} games), "
+                f"vs {win_pct}% after wins ({len(after_win)})",
                 (win_pct - loss_pct) * weight,
             ))
         elif abs(win_pct - loss_pct) <= NO_TILT_MAX_GAP_PP:
-            strengths.append(Finding(f"No tilt: {loss_pct}% after a loss, {win_pct}% after a win", 2 * weight))
+            strengths.append(Finding(f"Steady after losses: {loss_pct}% ({len(after_loss)} games), {win_pct}% after wins ({len(after_win)})", 2 * weight))
 
     by_day = defaultdict(list)
     for g in ordered:
@@ -302,8 +342,8 @@ def _session_findings(games, tz, day_start_hour):
         early_pct, late_pct = _pct(*_record(early)), _pct(*_record(late))
         if late_pct <= early_pct - SESSION_GAP_PP:
             tips.append(Finding(
-                f"Stop after {GAMES_BEFORE_LONG_SESSION} games a day: {late_pct}% from game "
-                f"{GAMES_BEFORE_LONG_SESSION + 1} on, {early_pct}% before",
+                f"Consider shorter sessions: {late_pct}% from game "
+                f"{GAMES_BEFORE_LONG_SESSION + 1} on ({len(late)} games), {early_pct}% before ({len(early)})",
                 (early_pct - late_pct) * _weight(len(early), len(late)),
             ))
     return strengths, tips
@@ -313,8 +353,89 @@ def _top(findings):
     return [f.text for f in sorted(findings, key=lambda f: f.score, reverse=True)[:MAX_FINDINGS]]
 
 
-def analyze_player(*, riot_id, games, queue, role_baselines, names_by_puuid, now, tz, day_start_hour):
+def _rate(game, key):
+    minutes = (game.get("duration_seconds") or 0) / 60
+    value = game.get(key)
+    return value / minutes if value is not None and minutes > 0 else None
+
+
+def _objectives(game):
+    values = [game.get(key) for key in ("dragon_takedowns", "baron_takedowns", "herald_takedowns")]
+    return sum(values) if all(value is not None for value in values) else None
+
+
+def _metric_findings(games):
+    """Compare recent and earlier games on the SAME champion and role.
+
+    Both samples need 10 measured games; require a practical gap and a gap larger
+    than three standard errors. Missing measurements never turn into zeroes.
+    These are descriptive signals, not diagnoses or patch-adjusted benchmarks.
+    """
+    strengths, tips = [], []
+    groups = defaultdict(list)
+    for game in games:
+        if game.get("champion_name") and game.get("team_position") in ROLE_NAMES:
+            groups[game["champion_name"], game["team_position"]].append(game)
+    # label, measurement, minimum gap, higher is better, roles, action
+    metrics = (
+        ("CS/min", lambda g: _rate(g, "cs"), 0.7, True, {"TOP", "MIDDLE", "BOTTOM", "JUNGLE"}, "Review missed farm and rotations"),
+        ("CS at 10 min", lambda g: g.get("lane_cs_10"), 8, True, {"TOP", "MIDDLE", "BOTTOM"}, "Review early last-hitting and recalls"),
+        ("deaths/10 min", lambda g: None if _rate(g, "deaths") is None else 10 * _rate(g, "deaths"), 0.5, False, set(ROLE_NAMES), "Review deaths before objectives"),
+        ("kill participation %", lambda g: None if g.get("kill_participation") is None else 100 * g["kill_participation"], 10, True, set(ROLE_NAMES), "Review missed team fights and rotations"),
+        ("vision/min", lambda g: _rate(g, "vision_score"), 0.2, True, set(ROLE_NAMES), "Review vision setup before objectives"),
+        ("wards cleared/10 min", lambda g: None if _rate(g, "wards_killed") is None else 10 * _rate(g, "wards_killed"), 0.5, True, {"UTILITY", "JUNGLE"}, "Review sweeper use and control wards"),
+        ("epic objective takedowns/game", _objectives, 0.5, True, {"JUNGLE"}, "Review objective timing and team setup"),
+    )
+    for (champion, role), group in sorted(groups.items()):
+        ordered = sorted(group, key=lambda g: g["game_end_at"], reverse=True)
+        split = min(20, len(ordered) // 2)
+        if split < 10:
+            continue
+        for label, measure, minimum_gap, higher_good, roles, action in metrics:
+            if role not in roles:
+                continue
+            recent = [v for g in ordered[:split] if (v := measure(g)) is not None and math.isfinite(v)]
+            earlier = [v for g in ordered[split:split + 50] if (v := measure(g)) is not None and math.isfinite(v)]
+            if min(len(recent), len(earlier)) < 10:
+                continue
+            new, old = statistics.mean(recent), statistics.mean(earlier)
+            gap = new - old
+            noise = math.sqrt(statistics.variance(recent) / len(recent) + statistics.variance(earlier) / len(earlier))
+            if abs(gap) < max(minimum_gap, abs(old) * 0.15, 3 * noise):
+                continue
+            improved = (gap > 0) == higher_good
+            context = f"{_bold(champion)} {ROLE_NAMES[role]}"
+            text = f"{context}: {label} {old:.1f} → {new:.1f} (earlier {len(earlier)} vs recent {len(recent)} games)"
+            if not improved:
+                text += f". {action}"
+            finding = Finding(text, 20 * abs(gap) / minimum_gap * _weight(len(recent), len(earlier)))
+            (strengths if improved else tips).append(finding)
+    return strengths, tips
+
+
+def _recent_summary(games):
+    if not games:
+        return "**Last 20 games · selected queue and period**\nNo games stored in this window."
+    wins, count = _record(games)
+    farm = [g for g in games if g.get("cs") is not None and (g.get("duration_seconds") or 0) > 0]
+    minutes = sum(g["duration_seconds"] for g in farm) / 60
+    cs = f"{sum(g['cs'] for g in farm) / minutes:.1f}" if minutes else "N/A"
+    kp = [g["kill_participation"] for g in games if g.get("kill_participation") is not None]
+    participation = f"{100 * statistics.mean(kp):.0f}%" if kp else "N/A"
+    coverage = ""
+    if len(farm) != count or len(kp) != count:
+        coverage = f"\n-# Measured: CS {len(farm)}/{count} · KP {len(kp)}/{count}"
+    return (
+        f"**Last {count} games · selected queue and period**\n"
+        f"{wins}W-{count - wins}L ({_pct(wins, count)}%) · CS/min **{cs}** · "
+        f"KDA **{_kda(games):.2f}** · KP **{participation}**{coverage}"
+    )
+
+
+def analyze_player(*, riot_id, games, queue, role_baselines, names_by_puuid, now, tz, day_start_hour, months=DEFAULT_MONTHS):
     """Build the analysis for one queue from the player's ranked rows (both queues, no remakes)."""
+    since = analysis_start(now, months)
+    games = [g for g in games if since < g["game_end_at"] <= now]
     queue_id = QUEUES[queue]["queue_id"]
     queue_games = [g for g in games if g["queue_id"] == queue_id]
     other_games = [g for g in games if g["queue_id"] != queue_id]
@@ -323,6 +444,8 @@ def analyze_player(*, riot_id, games, queue, role_baselines, names_by_puuid, now
     analysis = PlayerAnalysis(
         riot_id=riot_id,
         queue=queue,
+        months=months,
+        recent=sorted(queue_games, key=lambda g: g["game_end_at"], reverse=True)[:20],
         games=n,
         wins=wins,
         other_queue_games=other_n,
@@ -334,6 +457,7 @@ def analyze_player(*, riot_id, games, queue, role_baselines, names_by_puuid, now
     overall_pct = _pct(wins, n)
     strengths, tips = [], []
     for found_strengths, found_tips in (
+        _metric_findings(queue_games),
         _champion_findings(queue_games, overall_pct),
         _role_findings(queue_games, role_baselines, now),
         _trend_findings(queue_games, now),
@@ -362,24 +486,26 @@ def format_analysis_sections(analysis):
     records = [_queue_record(label, analysis.wins, analysis.games)]
     if analysis.other_queue_games:
         records.append(_queue_record(other_label, analysis.other_queue_wins, analysis.other_queue_games))
-    header = f"**{name}** · {label} analysis\n-# Last 12 months · {' · '.join(records)}"
+    period = f"last {analysis.months} month{'s' if analysis.months != 1 else ''}"
+    summary = _recent_summary(analysis.recent)
+    header = f"**{name}** · {label} analysis\n-# {period.capitalize()} · {' · '.join(records)}"
     command_name = discord.utils.escape_markdown(analysis.riot_id.split("#", 1)[0])
     if not analysis.enough_games:
         body = (
-            f"Not enough {label} games to analyze yet: {analysis.games} in the last 12 months, "
+            f"Not enough {label} games to analyze yet: {analysis.games} in the {period}, "
             f"{MIN_QUEUE_GAMES} needed."
         )
         if analysis.other_queue_games >= MIN_QUEUE_GAMES:
-            body += f" Try `!analyze {command_name} {other}`."
-        return [header, body]
+            body += f" Try `!analyze {command_name} {analysis.months} {other}`."
+        return [header, summary, body]
     strengths = "\n".join(f"✅ {line}" for line in analysis.strengths) or "Nothing stands out yet."
     tips = "\n".join(f"⚠️ {line}" for line in analysis.tips) or "No clear weak spots in these games."
     since = analysis.since.strftime("%d %b %Y").lstrip("0") if analysis.since else "?"
     footer = (
-        f"-# {label} games since {since} · tips need {MIN_GROUP_GAMES}+ games · "
-        f"`!analyze {command_name} {other}` for {other_label}"
+        f"-# {label} games since {since} · patterns need 10+ games per comparison; observations, not causes · "
+        f"`!analyze {command_name} {analysis.months} {other}` for {other_label}"
     )
-    return [header, f"**Strengths**\n{strengths}", f"**Work on**\n{tips}", footer]
+    return [header, summary, f"**Strengths**\n{strengths}", f"**Work on**\n{tips}", footer]
 
 
 def format_analysis_text(analysis):

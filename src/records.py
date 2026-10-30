@@ -43,7 +43,7 @@ class RecordCategory:
     # Row -> value, or None when the game doesn't qualify for this category.
     value: object
     text: object = _int_text
-    # Shown on `!records Name`; "best" or "worst" section, or None to leave it out.
+    # Shown on `!records Name`; "best", "jungle", or "worst" section, or None to leave it out.
     personal: str | None = None
     # Label for a value of exactly 1 ("1 kill"); None when the label reads the same.
     singular: str | None = None
@@ -99,13 +99,14 @@ CATEGORIES = (
     RecordCategory("gold", "gold", SECTION_FARM, _column("gold_earned")),
     RecordCategory("vision", "vision score", SECTION_FARM, _column("vision_score"), personal="best"),
     RecordCategory("assists", "assists", SECTION_FARM, _column("assists"), personal="best", singular="assist"),
-    # Jungle records count in every role (a support can take 4 barons); group card only.
-    RecordCategory("enemy_jungle_camps", "enemy jungle camps", SECTION_JUNGLE, _column("enemy_jungle_camps")),
+    # Stored enemy-jungle counter is minions, not verified whole camps.
+    # Objective participation records count in every role.
+    RecordCategory("enemy_jungle_camps", "enemy jungle minions", SECTION_JUNGLE, _column("enemy_jungle_camps")),
     RecordCategory(
-        "buffs_stolen", "buffs stolen", SECTION_JUNGLE, _column("buffs_stolen"), singular="buff stolen"
+        "buffs_stolen", "buffs stolen", SECTION_JUNGLE, _column("buffs_stolen"), personal="jungle", singular="buff stolen"
     ),
-    RecordCategory("dragons", "dragons", SECTION_JUNGLE, _column("dragon_takedowns"), singular="dragon"),
-    RecordCategory("barons", "barons", SECTION_JUNGLE, _column("baron_takedowns"), singular="baron"),
+    RecordCategory("dragons", "dragons", SECTION_JUNGLE, _column("dragon_takedowns"), personal="jungle", singular="dragon"),
+    RecordCategory("barons", "barons", SECTION_JUNGLE, _column("baron_takedowns"), personal="jungle", singular="baron"),
     RecordCategory("deaths", "deaths", SECTION_PAIN, _column("deaths"), personal="worst", singular="death"),
     RecordCategory("damage_taken", "damage taken", SECTION_PAIN, _column("damage_taken")),
     RecordCategory(
@@ -245,7 +246,7 @@ def detect_record_breaks(book, matches):
     `matches` is [(match_id, [row, ...])] oldest first; each row is a stats row with
     `riot_id`. Only a value strictly above the record counts; when several tracked
     players in one game pass it, the best of them takes the record. Personal bests
-    cover the "best" categories of `!records Name`, need MIN_GAMES_FOR_PERSONAL_BESTS
+    cover the "best" and "jungle" categories of `!records Name`, need MIN_GAMES_FOR_PERSONAL_BESTS
     earlier ranked games, and are skipped where the same game set the group record.
     Each match is added to the book afterwards, so a later game must beat an earlier one.
     Returns {(match_id, riot_id): [RecordBreak, ...]}, group records first.
@@ -276,7 +277,7 @@ def detect_record_breaks(book, matches):
                 continue
             group_keys = {found.category.key for found in breaks.get((match_id, riot_id), [])}
             for category in CATEGORIES:
-                if category.personal != "best" or category.key in group_keys:
+                if category.personal not in ("best", "jungle") or category.key in group_keys:
                     continue
                 value = category.value(row)
                 previous = book.bests.get(category.key, {}).get(riot_id)
@@ -412,13 +413,13 @@ def format_personal_sections(book, riot_id):
         f"🏆 **{name}** · personal bests\n"
         f"-# {career.games:,} ranked games · {career.wins:,} wins · since {_month(career.first_at)}"
     )
-    best, worst = [], []
+    best, worst, jungle = [], [], []
     for category in CATEGORIES:
         holder = book.bests.get(category.key, {}).get(riot_id)
         if category.personal is None or holder is None or not holder.value:
             continue
         line = _holder_line(category, holder, with_name=False, rank=book.group_rank(category.key, riot_id))
-        (best if category.personal == "best" else worst).append(line)
+        {"best": best, "worst": worst, "jungle": jungle}[category.personal].append(line)
     win_run = book.streaks["win"].get(riot_id)
     if win_run is not None:
         best.append(_streak_line(win_run, "win", with_name=False, rank=book.group_rank("win", riot_id)))
@@ -432,6 +433,10 @@ def format_personal_sections(book, riot_id):
     sections = [header]
     if best:
         sections.append("**Best**\n" + "\n".join(best))
+    if career.objective_steals:
+        jungle.append(f"**{career.objective_steals:,}** objective steals (career)" + _rank_suffix(book.career_rank("objective_steals", riot_id)))
+    if jungle:
+        sections.append("**Jungle and objectives**\n" + "\n".join(jungle))
     if worst:
         sections.append("**Worst**\n" + "\n".join(worst))
     sections.append(f"{FOOTER} · `!records` for the group")

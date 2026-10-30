@@ -194,8 +194,8 @@ All workers start with jitter to avoid bursty startup traffic and log cycle hear
 - `!Add Name#Tag`
 - `!remove Name#Tag`
 - `!profile Name#Tag`
-- `!analyze Name#Tag [solo|flex]` (alias `!analyse`; the name alone works when it's unique)
-- `!records [Name#Tag]` (group Hall of Fame, or one player's personal bests; ranked games only)
+- `!analyze Name#Tag [months] [solo|flex]` (alias `!analyse`; default: last 1 month of Solo/Duo. `!analyze Name 3` covers 3 months; 1-12 supported. Queue and months may appear in either order.)
+- `!records [Name#Tag]` (alias `!record`; group Hall of Fame, or one player's personal bests; ranked games only)
 - `!wrapped Name#Tag` (a player's Poro Wrapped for the year; open from 31 December 18:00 until the end of January, any time for admins; `!wrapped` alone previews the group post for admins)
 - `!DebugPlayer Name#Tag`
 - `!health`
@@ -220,7 +220,13 @@ Command routing:
 - `!tts` in `EVENTS_CHANNEL_ID` or `MATCH_RECAP_CHANNEL_ID`
 - `!champdisplay` in `EVENTS_CHANNEL_ID` or `MATCH_RECAP_CHANNEL_ID`
 - `!sync` in any server channel
+- `!analyze`, `!analyse`, `!records`, and `!record` in `MANUAL_COMMANDS_CHANNEL_ID` (defaults to `EVENTS_CHANNEL_ID`)
+- `!help` in the manual-command or events channel
 - all other commands (and `/health`) in `EVENTS_CHANNEL_ID`
+
+Analysis uses only existing database stats: **zero Riot requests**. The rolling calendar-month window ends now (not the previous calendar month). The Last 20 Games section shows the latest available games within the selected queue and window: win/loss, CS/min, KDA, and kill participation, with missing measurements marked N/A. Strengths and Work on each show up to three supported findings; empty sections get no filler. New metric trends compare the same champion and role with 10+ measured games on each side and practical/noise thresholds. These are observations, not proof of why a game was won or lost. The whole-window record stays in the header.
+
+Personal records now include buffs stolen, dragon/baron takedowns, and career objective steals. The stored enemy-jungle counter is labeled minions; it does not establish whole camps stolen. Zero or missing personal jungle records are omitted.
 
 Permissions:
 - `!Add`, `!remove`, `!backfill`, `!tts on|off`, and `!champdisplay name|icon|both` change shared state and require the **Manage Server** permission (or Administrator), or the optional `ADMIN_ROLE_ID` role

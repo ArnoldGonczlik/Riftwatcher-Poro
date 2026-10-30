@@ -5,6 +5,27 @@ import pytest
 from src.commands.routing import command_channel_id, enforce_command_channel, is_supported_command
 
 
+@pytest.mark.parametrize("command", ["!analyze", "!analyse name 3", "!records", "!record name"])
+def test_manual_reports_have_their_own_channel(command):
+    assert is_supported_command(command)
+    assert command_channel_id(command, daily_channel_id=1, weekly_channel_id=2,
+                              events_channel_id=3, manual_commands_channel_id=4) == 4
+
+
+def test_help_available_in_manual_channel_but_admin_commands_stay_in_events():
+    from src.commands.routing import format_help_text
+
+    kwargs = dict(daily_channel_id=1, weekly_channel_id=2, events_channel_id=3, manual_commands_channel_id=4)
+    assert command_channel_id("!help", **kwargs) == (3, 4)
+    assert command_channel_id("!add name#tag", **kwargs) == 3
+    help_text = format_help_text(report_day_start_hour=6, match_recap_channel_id=5, **kwargs)
+    assert "[months]" in help_text and "1 month by default" in help_text
+    assert "(run in <#4>)" in help_text
+    assert len(format_help_text(report_day_start_hour=6, **{
+        key: 123456789012345678 for key in (*kwargs, "match_recap_channel_id")
+    })) <= 2000
+
+
 class FakeChannel:
     def __init__(self, channel_id):
         self.id = channel_id
