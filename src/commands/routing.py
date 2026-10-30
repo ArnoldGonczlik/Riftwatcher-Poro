@@ -41,7 +41,7 @@ def format_help_text(
         f"- `{BACKFILL_COMMAND} YYYY-MM-DD YYYY-MM-DD`: Rebuild historical daily stats from cached matches (run in {commands_channel_ref}).\n"
         f"- `{SCORE_COMMAND}`: Show how each player's Gamer Score is calculated today (run in {commands_channel_ref}).\n"
         f"- `{PROFILE_COMMAND} Name#Tag`: Show player profile summary (run in {commands_channel_ref}).\n"
-        f"- `{ANALYZE_COMMAND} Name#Tag [solo|flex]`: Strengths and tips from a year of ranked games; Solo/Duo unless `flex` (run in {commands_channel_ref}).\n"
+        f"- `{ANALYZE_COMMAND} Name#Tag [months] [solo|flex]`: Strengths and tips from the last 3 months of ranked games (1-12 months); Solo/Duo unless `flex` (run in {commands_channel_ref}).\n"
         f"- `{RECORDS_COMMAND} [Name#Tag]`: Group records from ranked games, or one player's personal bests (run in {commands_channel_ref}).\n"
         f"- `{WRAPPED_COMMAND} Name#Tag`: A player's Poro Wrapped for the year, from 31 Dec 18:00 until the end of January (run in {commands_channel_ref}).\n"
         f"- `{RIOT_TEST_COMMAND}`: Verify Riot API connectivity (run in {commands_channel_ref}).\n"
