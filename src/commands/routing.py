@@ -43,7 +43,6 @@ def format_help_text(
         f"- `{PROFILE_COMMAND} Name#Tag`: Show player profile summary (run in {commands_channel_ref}).\n"
         f"- `{ANALYZE_COMMAND} Name#Tag [months] [solo|flex]`: Strengths and tips from the last 3 months of ranked games (1-12 months); Solo/Duo unless `flex` (run in {commands_channel_ref}).\n"
         f"- `{RECORDS_COMMAND} [Name#Tag]`: Group records from ranked games, or one player's personal bests (run in {commands_channel_ref}).\n"
-        f"- `{WRAPPED_COMMAND} Name#Tag`: A player's Poro Wrapped for the year, from 31 Dec 18:00 until the end of January (run in {commands_channel_ref}).\n"
         f"- `{RIOT_TEST_COMMAND}`: Verify Riot API connectivity (run in {commands_channel_ref}).\n"
         f"- `{TEST_COMMAND}`: Verify Discord send permissions (run in {commands_channel_ref}).\n"
         f"- `{STREAK_COMMAND} Name#Tag`: Manually post current win/loss streak callout (run in {f'<#{match_recap_channel_id}>' if match_recap_channel_id else commands_channel_ref}).\n"
