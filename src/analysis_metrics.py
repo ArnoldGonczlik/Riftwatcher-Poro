@@ -128,18 +128,18 @@ def playstyle_summary(games: list) -> str:
 
 
 def recent_summary(games: list) -> str:
+    """One line for the card header: the latest 20 games of the queue and window shown."""
     recent = sorted(games, key=lambda game: game["game_end_at"], reverse=True)[:20]
     if not recent:
         return ""
     wins = sum(bool(game["win"]) for game in recent)
     deaths = sum(game["deaths"] for game in recent)
     kda = sum(game["kills"] + game["assists"] for game in recent) / max(1, deaths)
-    return (f"**Last {len(recent)} games · selected queue and period**\n"
-            f"{wins}W-{len(recent) - wins}L ({100 * wins / len(recent):.0f}%) · CS/min **{_summary(recent, 'cs')}** · "
-            f"KDA **{kda:.2f}** · KP **{_summary(recent, 'kill_participation')}**")
+    return (f"Last {len(recent)} games: {wins}W-{len(recent) - wins}L ({100 * wins / len(recent):.0f}%) · "
+            f"{_summary(recent, 'cs')} CS/min · KDA {kda:.2f} · KP {_summary(recent, 'kill_participation')}")
 
 
-def _comparison(first: list, second: list, metric: Metric, gap_multiplier: float = 1):
+def _comparison(first: list, second: list, metric: Metric):
     a = [value for game in first if (value := _measure(game, metric)) is not None]
     b = [value for game in second if (value := _measure(game, metric)) is not None]
     if min(len(a), len(b)) < MIN_MEASURED:
@@ -147,16 +147,16 @@ def _comparison(first: list, second: list, metric: Metric, gap_multiplier: float
     new, old = statistics.mean(a), statistics.mean(b)
     noise = math.sqrt(statistics.variance(a) / len(a) + statistics.variance(b) / len(b))
     gap = new - old
-    if abs(gap) < max(metric.gap * gap_multiplier, abs(old) * 0.15, 3 * noise):
+    if abs(gap) < max(metric.gap, abs(old) * 0.15, 3 * noise):
         return None
     return new, old, len(a), len(b), gap
 
 
 def metric_findings(games: list) -> tuple[list, list]:
-    """Return (text, score, topic) triples: same champion/role, measured samples only.
+    """Return (text, score, topic) triples: recent vs earlier games on the same champion and role.
 
-    Recent-vs-earlier changes take priority. Otherwise a large wins-vs-losses gap
-    can suggest something to review; it does not establish a cause of losing.
+    Wins are never compared with losses: losing games come with more deaths and less
+    farm by themselves, so such a gap mostly restates the result, not a habit to fix.
     """
     strengths, tips = [], []
     groups = defaultdict(list)
@@ -166,29 +166,17 @@ def metric_findings(games: list) -> tuple[list, list]:
     for (champion, role), group in sorted(groups.items()):
         ordered = sorted(group, key=lambda game: game["game_end_at"], reverse=True)
         split = min(20, len(ordered) // 2)
-        wins = [game for game in group if game["win"]]
-        losses = [game for game in group if not game["win"]]
         context = f"**{discord.utils.escape_markdown(champion)}** {ROLE_NAMES[role]}"
         for metric in METRICS:
             if role not in metric.roles:
                 continue
             trend = _comparison(ordered[:split], ordered[split:split + 50], metric)
-            if trend:
-                new, old, n, m, gap = trend
-                text = (f"{context}: {metric.label} {old:.1f} → {new:.1f} "
-                        f"(earlier {m} vs recent {n} games)")
-                improved = (gap > 0) == metric.higher_good
-                text += f". {metric.continue_action}" if improved else f". {metric.action}"
-                score = 20 * abs(gap) / metric.gap * math.sqrt(min(n, m))
-                (strengths if improved else tips).append((text, score, metric.topic))
+            if not trend:
                 continue
-            outcome = _comparison(losses, wins, metric, gap_multiplier=2)
-            if not outcome:
-                continue
-            lost, won, n, m, gap = outcome
-            if (gap > 0) == metric.higher_good:
-                continue
-            text = (f"{context}: {metric.label} {lost:.1f} in losses vs {won:.1f} in wins "
-                    f"({n}L/{m}W). {metric.action}")
-            tips.append((text, 10 * abs(gap) / metric.gap * math.sqrt(min(n, m)), metric.topic))
+            new, old, n, m, gap = trend
+            text = f"{context}: {metric.label} {old:.1f} → {new:.1f} (earlier {m} vs recent {n} games)"
+            improved = (gap > 0) == metric.higher_good
+            text += f". {metric.continue_action}" if improved else f". {metric.action}"
+            score = 20 * abs(gap) / metric.gap * math.sqrt(min(n, m))
+            (strengths if improved else tips).append((text, score, metric.topic))
     return strengths, tips

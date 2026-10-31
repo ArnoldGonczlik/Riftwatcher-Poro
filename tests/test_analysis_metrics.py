@@ -61,8 +61,7 @@ def test_missing_measurements_are_never_fabricated_as_zero():
 def test_last_twenty_selects_latest_games_and_keeps_all_summary_fields():
     games = [match(i, win=i >= 10) for i in range(30)]
     summary = recent_summary(list(reversed(games)))
-    assert "Last 20 games" in summary and "20W-0L" in summary
-    assert "CS/min **6.0**" in summary and "KDA **3.00**" in summary and "KP **60.0%**" in summary
+    assert summary == "Last 20 games: 20W-0L (100%) · 6.0 CS/min · KDA 3.00 · KP 60.0%"
     assert recent_summary([]) == "" and playstyle_summary([]) == ""
 
 
@@ -84,13 +83,10 @@ def test_multiple_declines_have_evidence_and_review_actions():
     assert {topic for _text, _score, topic in tips} == {"farm", "vision", "survival"}
 
 
-def test_large_win_loss_pattern_is_labeled_without_claiming_causation():
+def test_wins_and_losses_are_never_compared():
+    # Lost games have less farm by themselves; that gap restates the result, so it's no tip.
     games = [match(i, cs=240 if i % 2 == 0 else 120) for i in range(40)]
-    strengths, tips = metric_findings(games)
-    assert strengths == [] and len(tips) == 1
-    text = tips[0][0]
-    assert "4.0 in losses vs 8.0 in wins (20L/20W)" in text
-    assert "Review missed waves" in text and "caused" not in text
+    assert metric_findings(games) == ([], [])
 
 
 def test_champion_role_changes_small_samples_and_noise_do_not_create_advice():

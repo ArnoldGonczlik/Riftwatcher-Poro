@@ -443,7 +443,9 @@ def format_analysis_sections(analysis):
         records.append(_queue_record(other_label, analysis.other_queue_wins, analysis.other_queue_games))
     period = f"last {analysis.months} month{'s' if analysis.months != 1 else ''}"
     header = f"**{name}** · {label} analysis\n-# {period.capitalize()} · {' · '.join(records)}"
-    overview = [text for text in (analysis.recent, analysis.profile) if text]
+    if analysis.recent:
+        header += f"\n-# {analysis.recent}"
+    overview = [analysis.profile] if analysis.profile else []
     command_name = discord.utils.escape_markdown(analysis.riot_id.split("#", 1)[0])
     # Keep a non-default month count in suggested commands.
     months_arg = f" {analysis.months}" if analysis.months != DEFAULT_MONTHS else ""
@@ -459,8 +461,7 @@ def format_analysis_sections(analysis):
     since = analysis.since.strftime("%d %b %Y").lstrip("0") if analysis.since else "?"
     footer = (
         f"-# {label} games since {since} · tips need {MIN_GROUP_GAMES}+ games · "
-        f"`!analyze {command_name}{months_arg} {other}` for {other_label} · add 1-12 for months\n"
-        "-# Patterns describe these games, not causes. Metric comparisons need 10+ measured games on each side."
+        f"`!analyze {command_name}{months_arg} {other}` for {other_label} · add 1-12 for months"
     )
     return [header, *overview, f"**Strengths**\n{strengths}", f"**Work on**\n{tips}", footer]
 
